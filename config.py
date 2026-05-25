@@ -1,11 +1,13 @@
 # config.py
+use_symmetry = False # artifical enforced symmetry to stop the model from exploding.
+
 # ── Particle Parameters ───────────────────────────────────────────────────────
 radius = 1
 
 # ── Domain (Scaled by radius) ─────────────────────────────────────────────────
 Lx = 20.0 * radius  
 Ly = 10 * radius  
-Nx, Ny = int(331), int(287)
+Nx, Ny = int(351), int(287)
 dx = Lx / (Nx - 1)
 dy = Ly / (Ny - 1)
 cx = 5.0 * radius   
@@ -28,7 +30,7 @@ Re_actual = (U_bg * (2.0 * radius)) / nu
 Pe_calc = Re_actual * Sc_target  
 
 # Calculate total time based on 5x the domain length
-Total_Time = 15#5 * Lx / U_bg
+Total_Time = 35 # 5 * Lx / U_bg
 
 # 1. Calculate the true physical diffusivity
 K = nu / Sc_target

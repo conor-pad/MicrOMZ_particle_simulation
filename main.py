@@ -2,6 +2,7 @@
 import os
 import warnings
 import logging
+import pickle
 
 # Essential environment variables for M2 Mac
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -54,20 +55,33 @@ def print_damkohler_diagnostics(cfg, bgc):
 # ───────────────────────────────────────────
 
 def main():
-    # Initialize PyTorch tensors and parameters
     device, state = setup_physics(cfg)
-
-    # Create a temporary BioPar object and run diagnostics!
     bgc_params = BioPar()
     print_damkohler_diagnostics(cfg, bgc_params)
 
-    # Run the simulation
-    results = run_simulation(state, cfg, device)
+    cache_file = "simulation_cache.pkl"
+    
+    # Toggle this to True if you changed the physics and NEED to overwrite the save!
+    force_rerun = True 
 
-    # Generate the MP4s and PNGs
+    if os.path.exists(cache_file) and not force_rerun:
+        print(f"\n🚀 Loading cached simulation data from {cache_file}...")
+        print("Skipping physics. Going straight to plotting!")
+        with open(cache_file, "rb") as f:
+            results = pickle.load(f)
+    else:
+        # Run the heavy math
+        results = run_simulation(state, cfg, device)
+        
+        # Save it for next time
+        print(f"💾 Saving raw data to {cache_file} for instant plotting later...")
+        with open(cache_file, "wb") as f:
+            pickle.dump(results, f)
+
+    # Generate the MP4s and PNGs instantly
     generate_plots(*results, cfg)
-
     print("All processes complete!")
+
 
 if __name__ == "__main__":
     main()

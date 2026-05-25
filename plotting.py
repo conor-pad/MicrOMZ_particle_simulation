@@ -7,7 +7,7 @@ from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # UPDATED SIGNATURE: Added n2o_ammox_snapshots and n2o_denit_snapshots right before cfg
-def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots, n2_snapshots, doc_snapshots, nh4_snapshots, w_snapshots, u_snapshots, v_snapshots, snapshot_times, n2o_ammox_snapshots, n2o_denit_snapshots, cfg):
+def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots, n2_snapshots, doc_snapshots, nh4_snapshots, w_snapshots, u_snapshots, v_snapshots, snapshot_times, n2o_ammox_snapshots, n2o_denit_snapshots, bio_snapshots, cfg):
     x = np.linspace(0, cfg.Lx, cfg.Nx)
     y = np.linspace(0, cfg.Ly, cfg.Ny)
     X, Y = np.meshgrid(x, y, indexing='ij')
@@ -285,5 +285,74 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots, n2_
               
     pbar.close()
     print(f"Saved {filename_1d} successfully!")
+
+    # ── STANDALONE OXYGEN + MICROBIAL DOTS ANIMATION ──────────────────────────────
+    fig_bio, ax_bio = plt.subplots(figsize=(8, 6))
+    
+    # 1. Base O2 Layer (Same as your 2D subplots)
+    im_bio_o2 = ax_bio.imshow(c_snapshots[0].T, origin='lower', extent=[0, cfg.Lx, 0, cfg.Ly], cmap='magma', vmin=o2_min, vmax=o2_max)
+    add_perfect_colorbar(im_bio_o2, ax_bio, 'O2 Concentration')
+    
+    # Draw the particle boundary
+    circle_bio = Circle((cfg.cx, cfg.cy), cfg.radius, color='white', fill=False, linewidth=2, linestyle='--')
+    ax_bio.add_patch(circle_bio)
+    
+    # Zoom in
+    zoom_y_min = max(0, cfg.cy - 2.5 * cfg.radius)
+    zoom_y_max = min(cfg.Ly, cfg.cy + 2.5 * cfg.radius)
+    ax_bio.set_xlim(0, cfg.Lx)
+    ax_bio.set_ylim(zoom_y_min, zoom_y_max)
+    
+    # 2. Setup the "Dots" (Sparse organic look)
+    stride = 3  # Only plot every 3rd grid cell to create "colonies"
+    xf = X[::stride, ::stride].flatten()
+    yf = Y[::stride, ::stride].flatten()
+    
+    # Drastically reduce scale so the dots stay small and inside the particle boundary
+    dot_scale = 30.0  
+    
+    # Initialize scatter layers for 3 representative bugs
+    scatter_aer = ax_bio.scatter(xf, yf, s=0, color='cyan', alpha=0.6, label='Aerobes (aer)', edgecolors='none')
+    scatter_nar = ax_bio.scatter(xf, yf, s=0, color='red', alpha=0.6, label='Denitrifiers (nar)', edgecolors='none')
+    scatter_aox = ax_bio.scatter(xf, yf, s=0, color='lime', alpha=0.6, label='Anammox (aox)', edgecolors='none')
+    
+    # ── THE LEGEND FIX ──
+    lgnd = ax_bio.legend(loc='upper right', framealpha=0.9)
+    # Force the dots in the legend to have a visible size of 50, regardless of the plot's s=0
+    for handle in lgnd.legend_handles:
+        handle.set_sizes([50.0])
+        
+    title_bio = ax_bio.set_title("O2 Field with Microbial Niches — Time: 0.00", fontweight='bold')
+    
+    def update_bio(frame_idx):
+        # Update O2 background
+        im_bio_o2.set_data(c_snapshots[frame_idx].T)
+        
+        # Slice the biological snapshots with the exact same stride so the data matches the coordinates!
+        sz_aer = bio_snapshots['aer'][frame_idx][::stride, ::stride].flatten() * dot_scale
+        sz_nar = bio_snapshots['nar'][frame_idx][::stride, ::stride].flatten() * dot_scale
+        sz_aox = bio_snapshots['aox'][frame_idx][::stride, ::stride].flatten() * dot_scale
+        
+        # Update the sizes
+        scatter_aer.set_sizes(sz_aer)
+        scatter_nar.set_sizes(sz_nar)
+        scatter_aox.set_sizes(sz_aox)
+        
+        title_bio.set_text(f"O2 Field with Microbial Niches — Time: {snapshot_times[frame_idx]:.2f}")
+        return [im_bio_o2, scatter_aer, scatter_nar, scatter_aox]
+        
+    anim_bio = animation.FuncAnimation(fig_bio, update_bio, frames=len(c_snapshots), interval=15, blit=False)
+    
+    filename_bio = f"Microbes_O2_Overlay_{base_filename}.mp4"
+    print(f"\nSaving Microbial Animation to {filename_bio}...")
+    
+    pbar_bio = tqdm(total=len(c_snapshots), desc="Rendering Microbes", ascii="⡀⡄⡆⡇▞▚░▒▓", unit="frames", bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+
+    def update_progress_bio(current_frame, total_frames):
+        pbar_bio.update(1)
+
+    anim_bio.save(filename_bio, writer='ffmpeg', fps=60, progress_callback=update_progress_bio)
+    pbar_bio.close()
+    print(f"Saved {filename_bio} successfully!")
 
     plt.show()

@@ -26,6 +26,19 @@ class InflowBCs:
     poc: float = 0.0               # Ambient water has no solid POC
     poc_core: float = 1000000.0    # Solid core density (mmol C / m^3). Used to calculate 2D Area.
 
+    # ── Microbial Functional Types (Biomass in mmol C / m^3) ──
+    aer: float = 0.0
+    nar: float = 0.0
+    nai: float = 0.0
+    nao: float = 0.0
+    nir: float = 0.0
+    nio: float = 0.0
+    nos: float = 0.0
+    aoa: float = 0.0
+    nob: float = 0.0
+    aox: float = 0.0
+    zoo: float = 0.0  
+
 # Instantiate the inflow values so other files can import and use them
 inflow = InflowBCs()
 

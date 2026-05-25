@@ -85,3 +85,119 @@ class BioPar:
     # Typical rates are ~0.1 to 1.0 per day. 
     # 1e-4 1/s is accelerated slightly so you can observe the particle shrink in your simulation timeframe!
     kHyd: float = 1e-4        # Hydrolysis rate of POC to DOC (1/s)
+
+
+    # ── MICROBIAL PARAMS (from ftype_params.m) ──
+    # aer (aerobic heterotroph)
+    aer_vmax_oxi: float = 2.3148e-05
+    aer_vmax_red: float = 2.4769e-05
+    aer_k_oxi: float = 0.2
+    aer_k_red: float = 20.0
+    aer_y_oxi: float = 4.00 # amount of oxidant (o2) needed to grow 1 unit of biomass ; number depends on free energy gain from each oxidant molecule
+    aer_y_red: float = 1 # 4.28 # amount of DOC needed to grow 1 unit of biomass
+    aer_e_nh4: float = 0.39
+
+    # nar (no3 to no2 heterotroph)
+    nar_vmax_oxi: float = 2.3148e-05
+    nar_vmax_red: float = 2.4769e-05
+    nar_k_oxi: float = 1.0
+    nar_k_red: float = 20.0
+    nar_y_oxi: float = 12.05 # amount of oxidant (no3) needed to grow 1 unit of biomass
+    nar_y_red: float = 6.01 # amount of DOC needed to grow 1 unit of biomass
+    nar_e_no2: float = 12.05
+    nar_e_nh4: float = 0.62
+
+    # nai (no3 to n2o heterotroph)
+    nai_vmax_oxi: float = 2.3148e-05
+    nai_vmax_red: float = 2.4769e-05
+    nai_k_oxi: float = 1.0
+    nai_k_red: float = 20.0
+    nai_y_oxi: float = 6.22
+    nai_y_red: float = 6.18
+    nai_e_n2o: float = 3.11
+    nai_e_nh4: float = 0.65
+
+    # nao (no3 to n2 heterotroph)
+    nao_vmax_oxi: float = 2.3148e-05
+    nao_vmax_red: float = 2.4769e-05
+    nao_k_oxi: float = 1.0
+    nao_k_red: float = 20.0
+    nao_y_oxi: float = 5.50
+    nao_y_red: float = 6.72
+    nao_e_n2: float = 2.75
+    nao_e_nh4: float = 0.72
+
+    # nir (no2 to n2o heterotroph)
+    nir_vmax_oxi: float = 2.3148e-05
+    nir_vmax_red: float = 2.4769e-05
+    nir_k_oxi: float = 1.0
+    nir_k_red: float = 20.0
+    nir_y_oxi: float = 8.75
+    nir_y_red: float = 4.60
+    nir_e_n2o: float = 4.375
+    nir_e_nh4: float = 0.43
+
+    # nio (no2 to n2 heterotroph)
+    nio_vmax_oxi: float = 2.3148e-05
+    nio_vmax_red: float = 2.4769e-05
+    nio_k_oxi: float = 1.0
+    nio_k_red: float = 20.0
+    nio_y_oxi: float = 6.07
+    nio_y_red: float = 4.7531
+    nio_e_n2: float = 3.035
+    nio_e_nh4: float = 0.45
+
+    # nos (n2o to n2 heterotroph)
+    nos_vmax_oxi: float = 2.3148e-05
+    nos_vmax_red: float = 2.4769e-05
+    nos_k_oxi: float = 0.4
+    nos_k_red: float = 20.0
+    nos_y_oxi: float = 5.54
+    nos_y_red: float = 3.22
+    nos_e_n2: float = 5.54
+    nos_e_nh4: float = 0.24
+
+    # aoa (nh4 to no2 chemoautotroph)
+    aoa_vmax_oxi: float = 1.2668e-04
+    aoa_vmax_red: float = 9.4482e-05
+    aoa_k_oxi: float = 0.333
+    aoa_k_red: float = 0.134
+    aoa_y_oxi: float = 8.16
+    aoa_y_red: float = 10.95
+    aoa_e_no2: float = 7.96
+
+    # nob (no2 to no3 chemoautotroph)
+    nob_vmax_oxi: float = 1.2043e-04
+    nob_vmax_red: float = 2.7557e-04
+    nob_k_oxi: float = 0.778
+    nob_k_red: float = 0.254
+    nob_y_oxi: float = 6.94
+    nob_y_red: float = 15.87
+    nob_e_no3: float = 15.87
+
+    # aox (anammox)
+    aox_vmax_oxi: float = 5.1244e-05
+    aox_vmax_red: float = 4.3287e-05
+    aox_k_oxi: float = 0.45
+    aox_k_red: float = 0.45
+    aox_y_oxi: float = 17.71
+    aox_y_red: float = 14.96
+    aox_e_no3: float = 2.57
+    aox_e_n2: float = 14.95
+
+    # ── loss parameters  ──
+    m_l: float = 0.02 / 86400  # Linear loss (1/s)
+    m_q: float = 0.10 / 86400  # Quadratic loss (1 / uM C s)
+    bmin: float = 1e-10        # Minimum biomass
+
+    # ── zooplankton grazer ──
+    zoo_umax: float = 1.00 / 86400  # Max grazing rate (1/s)
+    zoo_m_l:  float = 0.00 / 86400  # Zoo linear loss (1/s)
+    zoo_m_q:  float = 0.70 / 86400  # Zoo quadratic loss (1 / uM C s)
+    zoo_k_b:  float = 1.0           # Half-sat for grazing (mmol C / m3)
+    zoo_g_z:  float = 0.5           # Assimilation efficiency
+    zoo_o2lim: float = 10.0         # O2 limit for grazing (mmol O2 / m3)
+
+    # ── stoichiometry parameters ──
+    CN_bio: float = 5.0         # biomass C:N (mol C / mol N)
+    CN_det: float = 117.0/16.0  # detrital C:N (mol C / mol N)

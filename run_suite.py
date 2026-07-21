@@ -5,482 +5,564 @@ import torch
 torch.set_default_dtype(torch.float32)
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 import logging
-import datetime
+import time as _time
 
 import config as cfg
 import bcs
 from biopar import BioPar
-from sms import nit_sms_omz
 from physics import setup_physics
 from loop import run_simulation
 
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-warnings.filterwarnings("ignore")
-logging.getLogger("torch").setLevel(logging.ERROR)
+try:
+    from progress import progress
+except ImportError:
+    from tqdm import tqdm as progress
 
-def run_experiment(radius, ext_o2, ext_no3):
-    """Runs simulation and extracts true volume-integrated fluxes and C-yields."""
-    
-    # ── 1. Update Geometry & Speed ──
-    cfg.radius = radius
-    cfg.U_bg = 2.2 * (radius / 1.0)**0.56
-    
-    cfg.Lx = 20.0 * radius
-    cfg.Ly = 10.0 * radius
-    cfg.cx = 5.0 * radius
-    cfg.cy = cfg.Ly / 2.0
-    cfg.dx = cfg.Lx / (cfg.Nx - 1)
-    cfg.dy = cfg.Ly / (cfg.Ny - 1)
-    
-    # ── 2. Time & Baseline Diffusion ──
-    # Back to 5 flushes! Your dC/dt math makes this physically valid now.
-    cfg.Total_Time = 5.0 * (cfg.Lx / cfg.U_bg) 
-    cfg.K = cfg.nu / cfg.Sc_target
-    
-    # ── 3. NEW: Recalculate Dimensionless Physics Dynamically ──
-    cfg.Re_actual = (cfg.U_bg * (2.0 * radius)) / cfg.nu
-    cfg.Sh = 1 + 0.619 * (cfg.Re_actual ** 0.412) * (cfg.Sc_target ** (1/3))
-    tqdm.write(f"▶ Simulating | R: {cfg.radius:.2f} mm | U: {cfg.U_bg:.2f} mm/s | Re: {cfg.Re_actual:.2f} | Time: {cfg.Total_Time:.1f}s")
-    bcs.inflow.o2 = ext_o2
-    bcs.inflow.no3 = ext_no3
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+warnings.filterwarnings('ignore')
+logging.getLogger('torch').setLevel(logging.ERROR)
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── SWEEP MODE SWITCH ─────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+#
+#   'poc_o2'     — Initial POC (mmol C m⁻³)   ×  Ambient O₂ (mmol m⁻³)
+#   'o2_radius'  — Ambient O₂ (mmol m⁻³)      ×  Particle Radius (mm)
+#   'radius_poc' — Particle Radius (mm)       ×  Initial POC (mmol C m⁻³)
+#
+SWEEP_MODE = 'poc_o2'
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── SWEEP AXIS DEFINITIONS ────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+
+N_POC      = 8
+N_O2       = 6
+N_RADIUS   = 5
+POC_LEVELS    = np.linspace(50_000, 800_000, N_POC).tolist()   # mmol C m⁻³
+O2_LEVELS     = np.linspace(1.0, 25.0, N_O2).tolist()          # mmol O₂ m⁻³
+RADIUS_LEVELS = np.linspace(0.5, 5.0, N_RADIUS).tolist()       # mm
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── FIXED PARAMETERS ──────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+RADIUS_FIXED = 1.0     # mm  — fixed for poc_o2
+NO3_FIXED    = 10.0    # mmol NO₃ m⁻³
+O2_FIXED     = 6.0     # mmol O₂ m⁻³   — fixed for radius_poc
+POC_FIXED    = 400_000 # mmol C m⁻³    — fixed for o2_radius
+BIO_ACCEL    = 1.0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── SWEEP METADATA ────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+
+def get_sweep_meta():
+    """
+    Returns a dict describing the active sweep so that run_experiment() and
+    generate_all_plots() can adapt without mode-specific if/else trees.
+
+    Keys
+    ----
+    axis1_col   : DataFrame column for x-axis (outer loop)
+    axis2_col   : DataFrame column for y-axis (inner loop)
+    axis1_vals  : list of values for axis 1
+    axis2_vals  : list of values for axis 2
+    axis1_label : human-readable x-axis label
+    axis2_label : human-readable y-axis label
+    csv_name    : output CSV filename
+    chunk_size  : experiments per batch
+    """
+    if SWEEP_MODE == 'poc_o2':
+        return dict(
+            axis1_col   = 'Initial_POC_Density',
+            axis2_col   = 'Ext_O2',
+            axis1_vals  = POC_LEVELS,
+            axis2_vals  = O2_LEVELS,
+            axis1_label = 'Initial POC Density (mmol C m⁻³)',
+            axis2_label = 'Ambient O₂ (mmol O₂ m⁻³)',
+            csv_name    = 'outputs/MicrOMZ_POC_O2_Sweep.csv',
+            chunk_size  = 8,
+        )
+    elif SWEEP_MODE == 'o2_radius':
+        return dict(
+            axis1_col   = 'Ext_O2',
+            axis2_col   = 'Radius_mm',
+            axis1_vals  = O2_LEVELS,
+            axis2_vals  = RADIUS_LEVELS,
+            axis1_label = 'Ambient O₂ (mmol O₂ m⁻³)',
+            axis2_label = 'Particle Radius (mm)',
+            csv_name    = 'outputs/MicrOMZ_O2_Radius_Sweep.csv',
+            chunk_size  = 8,
+        )
+    elif SWEEP_MODE == 'radius_poc':
+        return dict(
+            axis1_col   = 'Radius_mm',
+            axis2_col   = 'Initial_POC_Density',
+            axis1_vals  = RADIUS_LEVELS,
+            axis2_vals  = POC_LEVELS,
+            axis1_label = 'Particle Radius (mm)',
+            axis2_label = 'Initial POC Density (mmol C m⁻³)',
+            csv_name    = 'outputs/MicrOMZ_Radius_POC_Sweep.csv',
+            chunk_size  = 8,
+        )
+    else:
+        raise ValueError(f"Unknown SWEEP_MODE: '{SWEEP_MODE}'. "
+                         f"Choose 'poc_o2', 'o2_radius', or 'radius_poc'.")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── EXPERIMENT RUNNER ─────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+
+def run_experiment(axis1_vals, axis2_vals):
+    """
+    Runs one BATCHED chunk — all len(axis1_vals) experiments simultaneously
+    as one bs>1 simulation, not one bs=1 run per entry.
+
+    No extrapolation/early-exit — every member still runs the full
+    Total_Time, same as before. This only removes the serial bs=1 loop.
+    """
+    bs = len(axis1_vals)
+
+    # ── Resolve physical variable arrays ────────────────────────────────────
+    if SWEEP_MODE == 'poc_o2':
+        poc_arr  = np.array(axis1_vals, dtype=np.float32)
+        o2_arr   = np.array(axis2_vals, dtype=np.float32)
+        no3_arr  = np.array([NO3_FIXED]    * bs, dtype=np.float32)
+        mort_arr = np.array([1.0]          * bs, dtype=np.float32)
+        radii    = np.array([RADIUS_FIXED] * bs, dtype=np.float32)
+    elif SWEEP_MODE == 'o2_radius':
+        o2_arr   = np.array(axis1_vals, dtype=np.float32)
+        radii    = np.array(axis2_vals, dtype=np.float32)
+        poc_arr  = np.array([POC_FIXED]  * bs, dtype=np.float32)
+        no3_arr  = np.array([NO3_FIXED]  * bs, dtype=np.float32)
+        mort_arr = np.array([1.0]        * bs, dtype=np.float32)
+    elif SWEEP_MODE == 'radius_poc':
+        radii    = np.array(axis1_vals, dtype=np.float32)
+        poc_arr  = np.array(axis2_vals, dtype=np.float32)
+        o2_arr   = np.array([O2_FIXED]  * bs, dtype=np.float32)
+        no3_arr  = np.array([NO3_FIXED] * bs, dtype=np.float32)
+        mort_arr = np.array([1.0]       * bs, dtype=np.float32)
+
+    # ── Patch config (array-valued — same pattern as NitrOMZ's run_suite) ──
+    cfg.batch_size             = bs
+    cfg.is_suite               = True
+    cfg.terminal_snapshot_only = True
+    cfg.radius                 = radii
+    cfg.U_bg                   = 2.2 * (cfg.radius / 1.0) ** 0.56
+    cfg.Lx                     = 20.0 * cfg.radius
+    cfg.Ly                     = 10.0 * cfg.radius
+    cfg.cx                     = 5.0  * cfg.radius
+    cfg.cy                     = cfg.Ly / 2.0
+    cfg.dx                     = cfg.Lx / (cfg.Nx - 1)
+    cfg.dy                     = cfg.Ly / (cfg.Ny - 1)
+    cfg.K                      = cfg.nu / cfg.Sc_target
+    # Total_Time must be a single scalar shared by the whole batch — take the
+    # worst case across members (identical to the old value when radius is fixed).
+    cfg.Total_Time             = float(np.max(5.0 * cfg.Lx / cfg.U_bg))
+    cfg.BIO_ACCEL               = BIO_ACCEL
+    cfg.MORT_AMP                = mort_arr
+
+    # ── Patch boundary conditions (per-member arrays) ───────────────────────
+    bcs.inflow.o2  = o2_arr.reshape(bs, 1)
+    bcs.inflow.no3 = no3_arr.reshape(bs, 1)
+
+    # ── Silence per-run stdout ───────────────────────────────────────────────
     original_stdout = sys.stdout
     sys.stdout = open(os.devnull, 'w')
-    device, state = setup_physics(cfg)
-    results = run_simulation(state, cfg, device)
+
+    device_, state = setup_physics(cfg)
+
+    # Override POC density (set after setup_physics so it can read k_hyd)
+    state['poc_initial'] = torch.tensor(
+        poc_arr.reshape(bs, 1, 1), dtype=torch.float32, device=device_)
+
+    _t0 = _time.perf_counter()
+    results = run_simulation(state, cfg, device_)
+    _elapsed = _time.perf_counter() - _t0
+
     sys.stdout.close()
     sys.stdout = original_stdout
 
-    # ── 1. Reconstruct Final Biological State ──
-    # Extract the final snapshot arrays and push them back to PyTorch
-    final_tensors = {
-        'o2':  torch.tensor(results[0][-1], device=device),
-        'n2o': torch.tensor(results[1][-1], device=device),
-        'no3': torch.tensor(results[2][-1], device=device),
-        'no2': torch.tensor(results[3][-1], device=device),
-        'n2':  torch.tensor(results[4][-1], device=device),
-        'doc': torch.tensor(results[5][-1], device=device),
-        'nh4': torch.tensor(results[6][-1], device=device),
-        'po4': torch.zeros_like(torch.tensor(results[0][-1], device=device))
+    # ── Extract terminal-state fields (now [bs, Nx, Ny], not squeezed) ──────
+    final_o2  = torch.tensor(results[0][-1],  device=device_)
+    final_n2o = torch.tensor(results[1][-1],  device=device_)
+    final_no3 = torch.tensor(results[2][-1],  device=device_)
+    final_no2 = torch.tensor(results[3][-1],  device=device_)
+    final_n2  = torch.tensor(results[4][-1],  device=device_)
+    final_doc = torch.tensor(results[5][-1],  device=device_)
+    final_nh4 = torch.tensor(results[6][-1],  device=device_)
+    bio_snap    = results[13]
+    growth_snap = results[14]   # kept in suite mode — per-cell specific growth rate (day⁻¹)
+
+    particle_mask = state['particle_mask']   # [bs, Nx, Ny]
+
+    # Per-member cell volume (dx/dy vary with radius in radius_* sweeps)
+    dV_m3_np = np.atleast_1d(cfg.dx * cfg.dy * 1.0 * 1e-9).astype(np.float32).reshape(-1)
+    if dV_m3_np.size == 1 and bs > 1:
+        dV_m3_np = np.repeat(dV_m3_np, bs)
+    dV_m3_t = torch.tensor(dV_m3_np, dtype=torch.float32, device=device_)   # [bs]
+
+    final_tracers = {
+        'o2': final_o2, 'no3': final_no3, 'no2': final_no2,
+        'n2o': final_n2o, 'n2': final_n2, 'doc': final_doc,
+        'nh4': final_nh4,
+        'po4': torch.zeros_like(final_o2),
+        'n2o_ammox': torch.zeros_like(final_o2),
+        'n2o_denit': torch.zeros_like(final_o2),
     }
-    
-    # NEW: Calculate true dC/dt for N2O using the last two saved frames
-    frames_saved = len(results[1])
-    time_between_frames = cfg.Total_Time / (frames_saved - 1) if frames_saved > 1 else cfg.Total_Time
-    prev_n2o = torch.tensor(results[1][-2], device=device) if frames_saved > 1 else torch.zeros_like(final_tensors['n2o'])
-    n2o_accumulation_rate = (final_tensors['n2o'] - prev_n2o) / time_between_frames
+    for bname in state['bio_names']:
+        final_tracers[bname] = torch.tensor(bio_snap[bname][-1], device=device_)
 
-    bgc = BioPar()
-    ddt, diags = nit_sms_omz(final_tensors, bgc)
-
-    # ── 2. Gauss's Theorem: Volume Integrals for Flux ──
-    # Volume of a single grid cell assuming 1mm slice depth (converted to m^3)
-    dV_m3 = (cfg.dx * cfg.dy * 1.0) * 1e-9  
-    
-    # Total biological production rates (mmol / s)
-    total_n2o_flux = torch.sum(ddt['n2o']).item() * dV_m3
-    total_n2_flux = torch.sum(ddt['n2']).item() * dV_m3
-
-    # Total DOC biologically consumed by all respiration pathways (mmol C / s)
-    total_c_consumed = torch.sum(diags['RemOx_C'] + diags['RemDen1_C'] + 
-                                 diags['RemDen2_C'] + diags['RemDen3_C']).item() * dV_m3
-
-   # ── 3. Internal vs. Plume Spatial Masking ──
-    particle_mask = state['particle_mask']
-    plume_mask = 1.0 - particle_mask  # Everything outside the particle
-
-    # Dead Core Tracker
-    oxic_threshold = 1.0 # mmol/m3 (Below this, denitrification starts)
-    anoxic_core_vol = torch.sum((final_tensors['o2'] < oxic_threshold) * particle_mask).item() * dV_m3
-    total_core_vol = torch.sum(particle_mask).item() * dV_m3
-    frac_anoxic_core = anoxic_core_vol / total_core_vol if total_core_vol > 0 else 0.0
-    
-    # Internal Production (Total + Separated by Pathway)
-    n2o_production_internal = torch.sum(ddt['n2o'] * particle_mask).item() * dV_m3
-    internal_n2o_ammox = torch.sum(ddt['n2o_ammox'] * particle_mask).item() * dV_m3
-    internal_n2o_denit = torch.sum(ddt['n2o_denit'] * particle_mask).item() * dV_m3
-    
-    # NEW: Transient Gauss's Theorem for True Physical Leakage
-    n2o_accumulation = torch.sum(n2o_accumulation_rate * particle_mask).item() * dV_m3
-    true_n2o_leakage_out = n2o_production_internal - n2o_accumulation
-
-    # Plume Production (Separated by Pathway)
-    n2o_production_plume = torch.sum(ddt['n2o'] * plume_mask).item() * dV_m3
-    plume_n2o_ammox = torch.sum(ddt['n2o_ammox'] * plume_mask).item() * dV_m3
-    plume_n2o_denit = torch.sum(ddt['n2o_denit'] * plume_mask).item() * dV_m3
-
-    # ── 4. Normalization (Yields and Fractions) ──
-    # N2O Yield: How much N2O is leaked per unit of Carbon METABOLIZED
-    n2o_yield_efficiency = total_n2o_flux / total_c_consumed if total_c_consumed > 0 else 0.0
-
-    # Separate Total C consumed into Core vs Plume
-    core_c_consumed = torch.sum((diags['RemOx_C'] + diags['RemDen1_C'] + 
-                                 diags['RemDen2_C'] + diags['RemDen3_C']) * particle_mask).item() * dV_m3
-    plume_c_consumed = torch.sum((diags['RemOx_C'] + diags['RemDen1_C'] + 
-                                  diags['RemDen2_C'] + diags['RemDen3_C']) * plume_mask).item() * dV_m3
-
-    # Core Metabolic Fractions
-    frac_oxic_core = (torch.sum(diags['RemOx_C'] * particle_mask).item() * dV_m3) / core_c_consumed if core_c_consumed > 0 else 0
-    frac_den1_core = (torch.sum(diags['RemDen1_C'] * particle_mask).item() * dV_m3) / core_c_consumed if core_c_consumed > 0 else 0
-    frac_den2_core = (torch.sum(diags['RemDen2_C'] * particle_mask).item() * dV_m3) / core_c_consumed if core_c_consumed > 0 else 0
-    frac_den3_core = (torch.sum(diags['RemDen3_C'] * particle_mask).item() * dV_m3) / core_c_consumed if core_c_consumed > 0 else 0
-
-    # Plume Metabolic Fractions
-    frac_oxic_plume = (torch.sum(diags['RemOx_C'] * plume_mask).item() * dV_m3) / plume_c_consumed if plume_c_consumed > 0 else 0
-    frac_den1_plume = (torch.sum(diags['RemDen1_C'] * plume_mask).item() * dV_m3) / plume_c_consumed if plume_c_consumed > 0 else 0
-    frac_den2_plume = (torch.sum(diags['RemDen2_C'] * plume_mask).item() * dV_m3) / plume_c_consumed if plume_c_consumed > 0 else 0
-    frac_den3_plume = (torch.sum(diags['RemDen3_C'] * plume_mask).item() * dV_m3) / plume_c_consumed if plume_c_consumed > 0 else 0
-
-    # ── 5. Internal Residence Times (Stock / Turnover Flux) ──
-    residence_times = {}
-    
-    for tracer in ['o2', 'no3', 'n2o', 'n2', 'nh4']:
-        stock = torch.sum(final_tensors[tracer] * particle_mask).item() * dV_m3
-        bio_flux = torch.sum(torch.abs(ddt[tracer]) * particle_mask).item() * dV_m3
-        tau = stock / bio_flux if bio_flux > 1e-12 else 0.0
-        residence_times[f'Tau_{tracer}'] = tau
-
-
-    # ── 6. O2 and NO3 Inward Fluxes ──
-    o2_consumption = torch.where(ddt['o2'] < 0, ddt['o2'], torch.tensor(0.0, device=device))
-    no3_consumption = torch.where(ddt['no3'] < 0, ddt['no3'], torch.tensor(0.0, device=device))
-    
-    o2_flux_in = torch.sum(torch.abs(o2_consumption) * particle_mask).item() * dV_m3
-    no3_flux_in = torch.sum(torch.abs(no3_consumption) * particle_mask).item() * dV_m3
-
-    # ── 7. DOC Outward Flux (Leakage) ──
-    doc_produced_internal = torch.sum(cfg.doc_flux_rate * particle_mask).item() * dV_m3
-    doc_consumed_internal = torch.sum(torch.abs(ddt['doc']) * particle_mask).item() * dV_m3
-    doc_flux_out = max(0.0, doc_produced_internal - doc_consumed_internal)
-
-    # ── 8. MERGE EVERYTHING INTO A CONSISTENT RETURN DICT ──
-    metrics = {
-        'Radius_mm': radius,
-        'Speed_mms': cfg.U_bg,
-        'Ext_O2': ext_o2,
-        'Ext_NO3': ext_no3,
-        'N2O_Flux_Total_mmol_s': total_n2o_flux,
-        'N2_Flux_Total_mmol_s': total_n2_flux,
-        'Frac_Anoxic_Core': frac_anoxic_core,
-        'N2O_Flux_Internal': n2o_production_internal,
-        'N2O_Flux_Plume': n2o_production_plume,
-        'N2O_Leakage_Out_mmol_s': true_n2o_leakage_out, 
-        'N2O_Yield_per_C': n2o_yield_efficiency,
-        'Frac_Oxic_Core': frac_oxic_core,
-        'Frac_Den1_Core': frac_den1_core,
-        'Frac_Den2_Core': frac_den2_core,
-        'Frac_Den3_Core': frac_den3_core,
-        'Frac_Oxic_Plume': frac_oxic_plume,
-        'Frac_Den1_Plume': frac_den1_plume,
-        'Frac_Den2_Plume': frac_den2_plume,
-        'Frac_Den3_Plume': frac_den3_plume,
-        'Plume_N2O_Ammox': plume_n2o_ammox,
-        'Plume_N2O_Denit': plume_n2o_denit,
-        'Internal_N2O_Ammox': internal_n2o_ammox,  
-        'Internal_N2O_Denit': internal_n2o_denit, 
-        'O2_Flux_In_mmol_s': o2_flux_in,
-        'NO3_Flux_In_mmol_s': no3_flux_in,
-        'DOC_Flux_Out_mmol_s': doc_flux_out
+    # Growth-rate fields are computed on the interior (Nx-2, Ny-2) grid in
+    # loop.py — build a matching interior particle mask to integrate them.
+    particle_mask_interior = particle_mask[..., 1:-1, 1:-1]
+    final_growth = {
+        n: torch.tensor(growth_snap[n][-1], device=device_) for n in state['bio_names']
     }
-    
-    metrics.update(residence_times)
-    # torch.save(final_tensors, f"outputs/Tensors_R{radius}_O2{ext_o2}_NO3{ext_no3}.pt")
-    return metrics
+
+    bgc = state['bgc']
+    # Temporarily apply per-member mort_amp ([bs,1,1] tensor) for the terminal
+    # SMS evaluation — computed once, vectorized over the whole batch.
+    orig_m_l,  orig_m_q  = bgc.m_l, bgc.m_q
+    orig_zm_l, orig_zm_q = bgc.zoo_m_l, bgc.zoo_m_q
+    mort_amp_t = state['mort_amp']   # [bs,1,1]
+    bgc.m_l = orig_m_l * mort_amp_t;  bgc.m_q = orig_m_q * mort_amp_t
+    bgc.zoo_m_l = orig_zm_l * mort_amp_t; bgc.zoo_m_q = orig_zm_q * mort_amp_t
+    from sms import microbial_sms_omz
+    ddt, _ = microbial_sms_omz(final_tracers, bgc)
+    bgc.m_l, bgc.m_q = orig_m_l, orig_m_q
+    bgc.zoo_m_l, bgc.zoo_m_q = orig_zm_l, orig_zm_q
+
+    def vol_int_b(field, mask=None):
+        """Per-member volume integral. Returns a [bs] tensor."""
+        f = field * mask if mask is not None else field
+        return f.sum(dim=(-2, -1)) * dV_m3_t
+
+    # N₂O budget (per member)
+    n2o_net_domain_b = vol_int_b(ddt['n2o'])
+    n2o_net_core_b   = vol_int_b(ddt['n2o'], particle_mask)
+    n2_net_domain_b  = vol_int_b(ddt['n2'])
+
+    # Anoxic core fraction (per member)
+    oxic_threshold    = 0.3   # mmol O₂ m⁻³
+    anoxic_vox_b      = vol_int_b((final_o2 < oxic_threshold).float(), particle_mask)
+    total_core_vol_b  = vol_int_b(particle_mask)
+    frac_anoxic_b     = torch.where(total_core_vol_b > 0,
+                                     anoxic_vox_b / total_core_vol_b,
+                                     torch.zeros_like(total_core_vol_b))
+
+    # Biomass (per member, per functional group)
+    bio_core_amounts_b = {
+        n: vol_int_b(final_tracers[n], particle_mask) for n in state['bio_names']
+    }
+    total_bio_core_b = sum(bio_core_amounts_b.values())
+
+    bio_names_list = state['bio_names']
+    bio_stack       = torch.stack([bio_core_amounts_b[n] for n in bio_names_list])  # [n_bugs, bs]
+    dom_idx_b       = bio_stack.argmax(dim=0)   # [bs]
+
+    # Core-mean specific growth rate per functional group (day⁻¹), per member.
+    # (Core-mean rather than volume-integrated — a rate, not an amount.)
+    core_cells_b = particle_mask_interior.sum(dim=(-2, -1))   # [bs]
+    growth_core_mean_b = {
+        n: torch.where(core_cells_b > 0,
+                        (final_growth[n] * particle_mask_interior).sum(dim=(-2, -1)) / core_cells_b,
+                        torch.zeros_like(core_cells_b))
+        for n in bio_names_list
+    }
+
+    # ── Assemble per-member metric dicts ────────────────────────────────────
+    batch_metrics = []
+    for b in range(bs):
+        poc_val, o2_val = float(poc_arr[b]), float(o2_arr[b])
+        no3_val, mort_val, radius_val = float(no3_arr[b]), float(mort_arr[b]), float(radii[b])
+        n2o_net_core   = n2o_net_core_b[b].item()
+        frac_anoxic    = frac_anoxic_b[b].item()
+        dominant_bug   = bio_names_list[dom_idx_b[b].item()]
+
+        metrics = {
+            # ── Identity columns (always present) ──
+            'Initial_POC_Density': poc_val,
+            'Ext_O2':              o2_val,
+            'Ext_NO3':             no3_val,
+            'Mort_Amp':            mort_val,
+            'Radius_mm':           radius_val,
+            # ── N₂O budget ──
+            'N2O_Net_Domain_SMS_mmol_s': n2o_net_domain_b[b].item(),
+            'N2O_Net_Core_SMS_mmol_s':   n2o_net_core,
+            'N2_Net_Domain_SMS_mmol_s':  n2_net_domain_b[b].item(),
+            # ── Anoxia ──
+            'Frac_Anoxic_Core': frac_anoxic,
+            # ── Biomass ──
+            'Total_Bio_Core_mmol':  total_bio_core_b[b].item(),
+            'Dominant_Bug':         dominant_bug,
+            # ── Individual functional group core biomass ──
+            **{f'Bio_Core_{n}_mmol': bio_core_amounts_b[n][b].item() for n in bio_names_list},
+            # ── Terminal core-mean specific growth rate per group (day⁻¹) ──
+            **{f'GrowthRate_{n}_perday': growth_core_mean_b[n][b].item() for n in bio_names_list},
+            # ── Metadata (whole-chunk time, shared across this batch) ──
+            'Elapsed_s': _elapsed,
+        }
+        batch_metrics.append(metrics)
+
+        print(f"  POC={poc_val:.0f}  O2={o2_val:.2f}  MORT={mort_val:.2f}  "
+              f"anoxic={frac_anoxic:.2f}  N2O_core={n2o_net_core:.2e}  "
+              f"dom={dominant_bug}", flush=True)
+
+    print(f"  [chunk of {bs} finished in {_elapsed:.1f}s]", flush=True)
+    return batch_metrics
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── PLOTTING ──────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
 def generate_all_plots(csv_filename):
-    df = pd.read_csv(csv_filename)
-    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+    df   = pd.read_csv(csv_filename)
+    meta = get_sweep_meta()
+
+    ax1_col   = meta['axis1_col']
+    ax2_col   = meta['axis2_col']
+    ax1_label = meta['axis1_label']
+    ax2_label = meta['axis2_label']
+
+    dead_zone = df['Frac_Anoxic_Core'] == 0.0
+    sns.set_theme(style='whitegrid', context='paper', font_scale=1.2)
     plt.rcParams.update({'font.weight': 'bold', 'axes.labelweight': 'bold'})
 
-    # ── DYNAMIC BASELINE SELECTION ──
-    available_no3 = df['Ext_NO3'].unique()
-    available_o2 = df['Ext_O2'].unique()
-    
-    # If there's only 1 value, it forces it. If multiple, it prefers 10.0/6.0, or falls back to index 0.
-    base_no3 = available_no3[0] if len(available_no3) == 1 else (10.0 if 10.0 in available_no3 else available_no3[0])
-    base_o2 = available_o2[0] if len(available_o2) == 1 else (6.0 if 6.0 in available_o2 else available_o2[0])
-    
-    print(f"\n📊 Plotting Baselines Auto-Selected -> O2: {base_o2}, NO3: {base_no3}")
+    print(f'\n📊 Generating {SWEEP_MODE} sweep plots…')
 
-    # ── PLOT 1: Normalized N2O Yield (Whole Domain) ──
-    g1 = sns.FacetGrid(df, col="Radius_mm", hue="Ext_NO3", palette="magma", height=4.5, aspect=1.2, sharey=False)
-    g1.map(sns.lineplot, "Ext_O2", "N2O_Yield_per_C", marker="o", linewidth=2.5, markersize=8)
-    g1.set_axis_labels("Ambient O2 (mmol/m3)", "Total Domain N2O Yield\n(mmol N2O / mmol Total C metabolized)")
-    g1.set_titles(col_template="Particle Radius: {col_name} mm")
-    g1.add_legend(title="Ambient NO3 (mmol/m3)", loc='upper center', bbox_to_anchor=(0.45, -0.15), ncol=3, frameon=True)
-    plt.subplots_adjust(top=0.85, bottom=0.25)
-    g1.fig.suptitle("N2O Production Efficiency vs. Ambient O2 & NO3 (Core + Plume)", fontsize=16, fontweight='bold', y=0.98)
-    plt.savefig(f"outputs/Plot1_N2O_Yield.png", dpi=300, bbox_inches='tight')
-
-    # ── PLOTS 2 & 3: Metabolic Architecture (Core vs Plume) ──
-    # Filtering dynamically based on the available data!
-    df_base = df[(df['Ext_O2'] == base_o2) & (df['Ext_NO3'] == base_no3)].copy()
-
-    def get_melted_fractions(df_in, zone_suffix, x_var):
-        cols = [f'Frac_Oxic_{zone_suffix}', f'Frac_Den1_{zone_suffix}', f'Frac_Den2_{zone_suffix}', f'Frac_Den3_{zone_suffix}']
-        melted = df_in.melt(id_vars=[x_var], value_vars=cols, var_name='Pathway', value_name='Fraction')
-        melted['Pathway'] = melted['Pathway'].str.replace('Frac_', '').str.replace(f'_{zone_suffix}', '')
-        return melted
-
-    # --- PLOT 2: vs Radius ---
-    df_core_rad = get_melted_fractions(df_base, 'Core', 'Radius_mm')
-    df_plume_rad = get_melted_fractions(df_base, 'Plume', 'Radius_mm')
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-    sns.lineplot(data=df_core_rad, x='Radius_mm', y='Fraction', hue='Pathway', marker="s", linewidth=2.5, ax=axes[0])
-    axes[0].set_title("Inside Particle Only (Core Metabolism)", fontweight='bold')
-    axes[0].set_xlabel("Particle Radius (mm)")
-    axes[0].set_ylabel("Fraction of DOC Consumed in Zone")
-
-    sns.lineplot(data=df_plume_rad, x='Radius_mm', y='Fraction', hue='Pathway', marker="s", linewidth=2.5, ax=axes[1])
-    axes[1].set_title("Outside Particle Only (Plume/Wake Metabolism)", fontweight='bold')
-    axes[1].set_xlabel("Particle Radius (mm)")
-
-    # Dynamic Title
-    plt.suptitle(f"Spatial Metabolic Partitioning vs. Particle Size (O2={base_o2}, NO3={base_no3})", fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig("outputs/Plot2_Metabolism_vs_Radius.png", dpi=300, bbox_inches='tight')
-
-    # --- PLOT 3: vs Velocity ---
-    df_core_vel = get_melted_fractions(df_base, 'Core', 'Speed_mms')
-    df_plume_vel = get_melted_fractions(df_base, 'Plume', 'Speed_mms')
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-    sns.lineplot(data=df_core_vel, x='Speed_mms', y='Fraction', hue='Pathway', marker="^", linewidth=2.5, ax=axes[0])
-    axes[0].set_title("Inside Particle Only (Core Metabolism)", fontweight='bold')
-    axes[0].set_xlabel("Sinking Velocity (mm/s)")
-    axes[0].set_ylabel("Fraction of DOC Consumed in Zone")
-
-    sns.lineplot(data=df_plume_vel, x='Speed_mms', y='Fraction', hue='Pathway', marker="^", linewidth=2.5, ax=axes[1])
-    axes[1].set_title("Outside Particle Only (Plume/Wake Metabolism)", fontweight='bold')
-    axes[1].set_xlabel("Sinking Velocity (mm/s)")
-
-    # Dynamic Title
-    plt.suptitle(f"Spatial Metabolic Partitioning vs. Sinking Velocity (O2={base_o2}, NO3={base_no3})", fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig("outputs/Plot3_Metabolism_vs_Velocity.png", dpi=300, bbox_inches='tight')
-
-    # ── PLOT 4: Residence Times (Inside Core Only) ──
-    tau_cols = ['Tau_o2', 'Tau_no3', 'Tau_n2o', 'Tau_n2', 'Tau_nh4']
-    df_tau = df.melt(id_vars=['Radius_mm', 'Ext_O2', 'Ext_NO3'],
-                     value_vars=tau_cols,
-                     var_name='Species', value_name='Residence_Time_s')
-
-    df_tau['Species'] = df_tau['Species'].str.replace('Tau_', '').str.upper()
-
-    g4 = sns.FacetGrid(df_tau, col="Radius_mm", row="Species", hue="Ext_NO3",
-                       palette="viridis", height=3.0, aspect=1.5, sharey="row")
-    
-    g4.map(sns.lineplot, "Ext_O2", "Residence_Time_s", marker="o", linewidth=2.5)
-    g4.add_legend(title="Ambient NO3 (mmol/m3)")
-    g4.set_axis_labels("Ambient O2 (mmol/m3)", "Core Residence Time (s)")
-    g4.set_titles(col_template="Radius: {col_name} mm", row_template="{row_name} Turnover")
-    
-    plt.subplots_adjust(top=0.92)
-    g4.fig.suptitle("Internal Microenvironmental Residence Times vs. Ambient Forcing (Inside Particle Only)", fontsize=16, fontweight='bold')
-    plt.savefig(f"outputs/Plot4_Residence_Times.png", dpi=300, bbox_inches='tight')
-
-    # ── PLOT 5: N2O Source Apportionment (Inside vs Outside) ──
-    df_plume = df_base.melt(id_vars=['Radius_mm', 'Speed_mms'], 
-                            value_vars=['Plume_N2O_Ammox', 'Plume_N2O_Denit'],
-                            var_name='Pathway', value_name='N2O Production (mmol/s)')
-    df_plume['Pathway'] = df_plume['Pathway'].str.replace('Plume_N2O_', '')
-
-    df_internal = df_base.melt(id_vars=['Radius_mm', 'Speed_mms'], 
-                               value_vars=['Internal_N2O_Ammox', 'Internal_N2O_Denit'],
-                               var_name='Pathway', value_name='N2O Production (mmol/s)')
-    df_internal['Pathway'] = df_internal['Pathway'].str.replace('Internal_N2O_', '')
-
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
-
-    sns.lineplot(data=df_plume, x='Radius_mm', y='N2O Production (mmol/s)', 
-                 hue='Pathway', marker="X", linewidth=2.5, palette=['teal', 'darkred'], ax=axes[0])
-    axes[0].set_title("Outside Particle Only (Plume/Wake N2O Sources)", fontweight='bold')
-    axes[0].set_xlabel("Particle Radius (mm)")
-    axes[0].set_ylabel("N2O Production Rate (mmol/s)")
-    axes[0].grid(True, linestyle='--', alpha=0.7)
-
-    sns.lineplot(data=df_internal, x='Radius_mm', y='N2O Production (mmol/s)', 
-                 hue='Pathway', marker="o", linewidth=2.5, palette=['teal', 'darkred'], ax=axes[1])
-    axes[1].set_title("Inside Particle Only (Core N2O Sources)", fontweight='bold')
-    axes[1].set_xlabel("Particle Radius (mm)")
-    axes[1].grid(True, linestyle='--', alpha=0.7)
-
-    # Dynamic Title
-    plt.suptitle(f"N2O Source Apportionment vs. Particle Size (O2={base_o2}, NO3={base_no3})", fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig("outputs/Plot5_N2O_Sources_Dual.png", dpi=300, bbox_inches='tight')
-
-    # ── PLOT 6: Boundary Layer Exchange Fluxes ──
-    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
-    
-    sns.lineplot(data=df, x='Ext_O2', y='O2_Flux_In_mmol_s', hue='Radius_mm', 
-                 palette='viridis', marker='o', linewidth=2.5, ax=axes[0])
-    axes[0].set_title('O2 Flux Across Boundary (Into Particle)', fontweight='bold')
-    axes[0].set_xlabel('Ambient O2 (mmol/m3)')
-    axes[0].set_ylabel('O2 Flux (mmol/s)')
-    axes[0].grid(True, linestyle='--', alpha=0.7)
-
-    sns.lineplot(data=df, x='Ext_NO3', y='NO3_Flux_In_mmol_s', hue='Radius_mm', 
-                 palette='flare', marker='s', linewidth=2.5, ax=axes[1])
-    axes[1].set_title('NO3 Flux Across Boundary (Into Particle)', fontweight='bold')
-    axes[1].set_xlabel('Ambient NO3 (mmol/m3)')
-    axes[1].set_ylabel('NO3 Flux (mmol/s)')
-    axes[1].grid(True, linestyle='--', alpha=0.7)
-
-    sns.lineplot(data=df, x='Ext_O2', y='DOC_Flux_Out_mmol_s', hue='Radius_mm', 
-                 palette='copper', marker='^', linewidth=2.5, ax=axes[2])
-    axes[2].set_title('DOC Flux Across Boundary (Out of Particle)', fontweight='bold')
-    axes[2].set_xlabel('Ambient O2 (mmol/m3)')
-    axes[2].set_ylabel('DOC Leakage (mmol/s)')
-    axes[2].grid(True, linestyle='--', alpha=0.7)
-
-    sns.lineplot(data=df, x='Ext_O2', y='N2O_Leakage_Out_mmol_s', hue='Radius_mm', 
-                 palette='magma', marker='X', linewidth=2.5, ax=axes[3])
-    axes[3].set_title('N2O Flux Across Boundary (Out of Particle)', fontweight='bold')
-    axes[3].set_xlabel('Ambient O2 (mmol/m3)')
-    axes[3].set_ylabel('N2O Leakage (mmol/s)')
-    axes[3].grid(True, linestyle='--', alpha=0.7)
-
-    plt.tight_layout()
-    plt.savefig("outputs/Plot6_Boundary_Fluxes.png", dpi=300, bbox_inches='tight')
-
-    # ── PLOT 7: Absolute N2O Flux (Inside Core Only) ──
-    radii = sorted(df['Radius_mm'].unique())
-    fig, axes = plt.subplots(1, len(radii), figsize=(5 * len(radii), 5), sharey=True)
-
-    for i, r in enumerate(radii):
-        ax = axes[i]
-        subset = df[df['Radius_mm'] == r]
-
-        sns.lineplot(data=subset, x='Ext_O2', y='N2O_Flux_Internal', hue='Ext_NO3', 
-                     palette=['#5DADE2', '#2874A6', '#154360'], 
-                     ax=ax, linewidth=3, marker='X', linestyle='--', errorbar=None)
-        
-        ax.axhline(0, color='black', linewidth=1.5, zorder=0)
-        ax.set_title(f"Particle Radius: {r} mm", fontweight='bold')
-        ax.set_xlabel('Ambient O2 (mmol/m3)')
-        
-        if i == 0:
-            ax.set_ylabel('Internal Core N2O Net Rate (mmol/s)\n<-- Net consumption inside   |   Net production inside -->')
+    def plot_contour(values_col, title, cbar_label, filename, cmap='viridis'):
+        plt.figure(figsize=(9, 6))
+        pivot = df.pivot_table(index=ax2_col, columns=ax1_col,
+                               values=values_col, dropna=False)
+        X, Y = np.meshgrid(pivot.columns, pivot.index)
+        Z    = pivot.values
+        min_z, max_z = np.nanmin(Z), np.nanmax(Z)
+        if min_z <= 0.0 < max_z:
+            eps    = max_z * 1e-5
+            levels = [0.0, eps] + list(np.linspace(eps, max_z, 20))[1:]
+            cf     = plt.contourf(X, Y, Z, levels=levels, cmap=cmap)
+            cl     = plt.contour(X, Y, Z, levels=[eps],
+                                 colors='cyan', linewidths=2, linestyles='dashed')
+            plt.clabel(cl, inline=True, fontsize=10, fmt='Zero')
         else:
-            ax.set_ylabel('')
-            
-        if ax.get_legend() is not None:
-            ax.get_legend().remove()
-    
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, title='Ambient NO3 (mmol/m3)', loc='upper center', bbox_to_anchor=(0.5, 0.05), ncol=3, frameon=True)
+            cf = plt.contourf(X, Y, Z, levels=20, cmap=cmap)
+        cbar = plt.colorbar(cf); cbar.set_label(cbar_label)
+        plt.scatter(X, Y, color='white', edgecolor='black', s=20, alpha=0.8, zorder=5)
+        plt.xlabel(ax1_label); plt.ylabel(ax2_label)
+        plt.title(title, fontsize=14, fontweight='bold', pad=15)
+        plt.tight_layout()
+        plt.savefig(f'outputs/{filename}', dpi=300, bbox_inches='tight')
+        plt.close()
 
-    plt.subplots_adjust(top=0.85, bottom=0.25)
-    fig.suptitle("Absolute N2O Net Flux (Inside Particle Core Only)", fontsize=16, fontweight='bold', y=0.98)
-    plt.savefig("outputs/Plot7_Internal_Flux_Only.png", dpi=300, bbox_inches='tight')
+    unique_ax1 = np.sort(df[ax1_col].dropna().unique())
+    unique_ax2 = np.sort(df[ax2_col].dropna().unique())
+    median_ax1 = unique_ax1[len(unique_ax1) // 2]
+    median_ax2 = unique_ax2[len(unique_ax2) // 2]
 
-    # ── PLOT 8: Anoxic "Dead Core" Fraction (Inside Core Only) ──
-    plt.figure(figsize=(8, 6))
-    sns.lineplot(data=df, x='Radius_mm', y='Frac_Anoxic_Core', hue='Ext_O2', 
-                 marker="s", linewidth=2.5, palette="crest")
-    
-    plt.title("Anoxic Core Fraction (Inside Particle Only)", fontweight='bold')
-    plt.xlabel("Particle Radius (mm)")
-    plt.ylabel("Fraction of Core Volume (< 1.0 mmol/m3 O2)")
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(title="Ambient O2 (mmol/m3)")
-    plt.savefig("outputs/Plot8_Anoxic_Core.png", dpi=300, bbox_inches='tight')
+    bio_group_cols = [f'Bio_Core_{n}_mmol' for n in
+                      ['aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo']]
+    bio_labels     = ['Aer', 'NaR', 'NaI', 'NaO', 'NiR', 'NiO', 'NoS', 'AOA', 'NOB', 'AOX', 'Zoo']
 
-    # ── PLOT 9: Terminal Ratio (Whole Domain) ──
-    df['Terminal_Ratio'] = df['N2_Flux_Total_mmol_s'] / (df['N2O_Flux_Total_mmol_s'] + 1e-12)
+    # ── Plot 1: N₂O net production rate, core ────────────────────────────────
+    plot_contour(
+        'N2O_Net_Core_SMS_mmol_s',
+        f'Plot 1: Terminal Net N₂O SMS Rate Inside Particle Core\n'
+        f'(mmol N₂O m⁻³ s⁻¹ integrated over core; + = source, − = sink)',
+        'mmol N₂O s⁻¹', 'Plot1_N2O_Core_Rate.png', 'magma')
 
-    plt.figure(figsize=(8, 6))
-    # Filtering dynamically based on available NO3
-    df_ratio = df[df['Ext_NO3'] == base_no3]
+    # ── Plot 2: N₂O net production rate, full domain ──────────────────────────
+    plot_contour(
+        'N2O_Net_Domain_SMS_mmol_s',
+        f'Plot 2: Terminal Net N₂O SMS Rate — Full Domain\n'
+        f'(core + plume; mmol N₂O s⁻¹)',
+        'mmol N₂O s⁻¹', 'Plot2_N2O_Domain_Rate.png', 'viridis')
 
-    sns.lineplot(data=df_ratio, x='Radius_mm', y='Terminal_Ratio', hue='Ext_O2', 
-                 marker="D", linewidth=2.5, palette="rocket")
-    
-    plt.axhline(1.0, color='black', linestyle='--', linewidth=1.5, zorder=0) 
-    plt.yscale('log') 
-    
-    # Dynamic Title
-    plt.title(f"Total Domain Terminal N2/N2O Ratio (Core + Plume, NO3={base_no3})", fontweight='bold')
-    plt.xlabel("Particle Radius (mm)")
-    plt.ylabel("Total System N2 / N2O Ratio (Log Scale)\n<-- System is N2O Source  |  System is N2 Sink -->")
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(title="Ambient O2 (mmol/m3)")
-    plt.savefig("outputs/Plot9_Terminal_Ratio.png", dpi=300, bbox_inches='tight')
+    # ── Plot 3: Anoxic core fraction ──────────────────────────────────────────
+    plot_contour(
+        'Frac_Anoxic_Core',
+        f'Plot 3: Anoxic Core Fraction at Terminal State\n'
+        f'(fraction of core cells with O₂ < 0.3 mmol m⁻³)',
+        'Fraction', 'Plot3_Anoxic_Core.png', 'inferno')
 
-    plt.show()
+    # ── Plot 4: Total core biomass ────────────────────────────────────────────
+    plot_contour(
+        'Total_Bio_Core_mmol',
+        f'Plot 4: Total Microbial Biomass Inside Particle Core\n'
+        f'(mmol C; all functional groups integrated)',
+        'mmol C', 'Plot4_Total_Bio_Core.png', 'cividis')
 
+    # ── Plot 5: Biomass fractions vs axis 2 (at median axis 1) ───────────────
+    df_p5 = df[df[ax1_col] == median_ax1].copy()
+    total_bio = df_p5[bio_group_cols].sum(axis=1).replace(0, np.nan)
+    frac_cols = []
+    for col, lbl in zip(bio_group_cols, bio_labels):
+        fcol = f'Frac_{lbl}'
+        df_p5[fcol] = df_p5[col] / total_bio
+        frac_cols.append(fcol)
+
+    melted5 = df_p5.melt(id_vars=[ax2_col], value_vars=frac_cols,
+                          var_name='Group', value_name='Fraction')
+    melted5['Group'] = melted5['Group'].str.replace('Frac_', '')
+    plt.figure(figsize=(9, 6))
+    sns.lineplot(data=melted5, x=ax2_col, y='Fraction', hue='Group',
+                 marker='o', linewidth=2.5)
+    plt.title(f'Plot 5: Core Biomass Fractions vs. {ax2_label.split("(")[0].strip()}\n'
+              f'(fixed {ax1_label.split("(")[0].strip()} = {median_ax1:.4g})',
+              fontweight='bold')
+    plt.xlabel(ax2_label); plt.ylabel('Fraction of Total Core Biomass')
+    plt.tight_layout()
+    plt.savefig('outputs/Plot5_Bio_Fractions_vs_Axis2.png', dpi=300)
+    plt.close()
+
+    # ── Plot 6: Biomass fractions vs axis 1 (at median axis 2) ───────────────
+    df_p6 = df[df[ax2_col] == median_ax2].copy()
+    total_bio6 = df_p6[bio_group_cols].sum(axis=1).replace(0, np.nan)
+    frac_cols6 = []
+    for col, lbl in zip(bio_group_cols, bio_labels):
+        fcol = f'Frac_{lbl}'
+        df_p6[fcol] = df_p6[col] / total_bio6
+        frac_cols6.append(fcol)
+
+    melted6 = df_p6.melt(id_vars=[ax1_col], value_vars=frac_cols6,
+                          var_name='Group', value_name='Fraction')
+    melted6['Group'] = melted6['Group'].str.replace('Frac_', '')
+    plt.figure(figsize=(9, 6))
+    sns.lineplot(data=melted6, x=ax1_col, y='Fraction', hue='Group',
+                 marker='s', linewidth=2.5)
+    plt.title(f'Plot 6: Core Biomass Fractions vs. {ax1_label.split("(")[0].strip()}\n'
+              f'(fixed {ax2_label.split("(")[0].strip()} = {median_ax2:.4g})',
+              fontweight='bold')
+    plt.xlabel(ax1_label); plt.ylabel('Fraction of Total Core Biomass')
+    plt.tight_layout()
+    plt.savefig('outputs/Plot6_Bio_Fractions_vs_Axis1.png', dpi=300)
+    plt.close()
+
+    # ── Plot 7: Dominant functional group regime map ──────────────────────────
+    from matplotlib.colors import ListedColormap
+    bug_order = ['aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo']
+    bug_labels_map = dict(zip(bug_order, bio_labels))
+    df['Dom_Idx'] = df[bio_group_cols].values.argmax(axis=1)
+    pivot7 = df.pivot_table(index=ax2_col, columns=ax1_col,
+                             values='Dom_Idx', dropna=False)
+    X7, Y7 = np.meshgrid(pivot7.columns, pivot7.index)
+    n_bugs = len(bug_order)
+    cmap7 = plt.cm.get_cmap('tab20', n_bugs)
+    plt.figure(figsize=(11, 7))
+    cf7 = plt.contourf(X7, Y7, pivot7.values,
+                        levels=np.arange(-0.5, n_bugs + 0.5, 1.0), cmap=cmap7)
+    cbar7 = plt.colorbar(cf7, ticks=range(n_bugs))
+    cbar7.ax.set_yticklabels(bio_labels)
+    cbar7.set_label('Dominant Functional Group (by core biomass)')
+    plt.xlabel(ax1_label); plt.ylabel(ax2_label)
+    plt.title('Plot 7: Dominant Core Functional Group Regime Map\n'
+              '(argmax of terminal-state biomass per functional group, particle mask only)',
+              fontweight='bold')
+    plt.tight_layout()
+    plt.savefig('outputs/Plot7_Dominant_Bug_Regime.png', dpi=300)
+    plt.close()
+
+    # ── Plot 8: N₂ net production rate ────────────────────────────────────────
+    plot_contour(
+        'N2_Net_Domain_SMS_mmol_s',
+        f'Plot 8: Terminal Net N₂ SMS Rate — Full Domain\n'
+        f'(mmol N₂ s⁻¹; proxy for completed denitrification)',
+        'mmol N₂ s⁻¹', 'Plot8_N2_Domain_Rate.png', 'plasma')
+
+    print('✅ All plots generated successfully!')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ── ENTRY POINT ───────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
 
 def main():
-    print("🌊 Starting NitrOMZ Parameter Suite...\n")
-    cfg.is_suite = True 
+    meta         = get_sweep_meta()
+    ax1_col      = meta['axis1_col']
+    ax2_col      = meta['axis2_col']
+    ax1_vals     = meta['axis1_vals']
+    ax2_vals     = meta['axis2_vals']
+    csv_filename = meta['csv_name']
+    chunk_size   = meta['chunk_size']
 
-    radii = [0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
-    o2_levels = [2.0, 6.0, 10.0]
-    no3_levels = [10.0]
-    
-    # ── 1. Create a clean outputs directory ──
-    out_dir = "outputs"
-    os.makedirs(out_dir, exist_ok=True)
+    n_total  = len(ax1_vals) * len(ax2_vals)
+    n_chunks = (n_total + chunk_size - 1) // chunk_size
 
-    # ── 2. Auto-generate a unique timestamped filename ──
-    # timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
-    # csv_filename = os.path.join(out_dir, f"NitrOMZ_Suite_{timestamp}.csv")
-    csv_filename = "outputs/NitrOMZ_Suite_2026-05-04_1518.csv"
+    W = 62
+    print(f"\n{'═'*W}")
+    print(f"  MicrOMZ Suite  │  {_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'─'*W}")
+    print(f"  Mode         : {SWEEP_MODE}")
+    print(f"  Grid         : {len(ax1_vals)} × {len(ax2_vals)} = {n_total} experiments")
+    print(f"  Chunks       : {n_chunks}  (batch size {chunk_size}, SERIAL)")
+    print(f"  Output       : {csv_filename}")
+    print(f"{'─'*W}")
+    print(f"  Axis 1 ({ax1_col}):")
+    for v in ax1_vals:
+        print(f"    {v:.4g}")
+    print(f"  Axis 2 ({ax2_col}):")
+    for v in ax2_vals:
+        print(f"    {v:.4g}")
+    print(f"{'═'*W}\n")
 
-    if os.path.exists(csv_filename):
-        results_df = pd.read_csv(csv_filename)
-        results_df = results_df.round({'Radius_mm': 2, 'Ext_O2': 2, 'Ext_NO3': 2})
-        results_df = results_df.drop_duplicates(subset=['Radius_mm', 'Ext_O2', 'Ext_NO3'], keep='last')
-        results_df.to_csv(csv_filename, index=False)
-        completed_runs = set(zip(results_df['Radius_mm'], results_df['Ext_O2'], results_df['Ext_NO3']))
-        results_data = results_df.to_dict('records')
-        
-        # ── NEW: Resume Confirmation Print ──
-        print(f"🔄 RESUMING RUN: Found existing data in '{csv_filename}'.")
-        print(f"⏭️ Skipping {len(completed_runs)} previously completed runs.\n")
+    os.makedirs('outputs', exist_ok=True)
+    results_data = []
+    run_configs  = [(a1, a2) for a1 in ax1_vals for a2 in ax2_vals]
+    _suite_t0    = _time.perf_counter()
 
-    else:
-        completed_runs = set()
-        results_data = []
-        
-        # ── NEW: Fresh Run Confirmation Print ──
-        print(f"🆕 Starting a completely fresh suite. Saving to '{csv_filename}'...\n")
+    with progress(total=n_total, desc='Overall sweep', unit='run') as pbar:
+        for i in range(0, n_total, chunk_size):
+            chunk_num = i // chunk_size + 1
+            batch     = run_configs[i: i + chunk_size]
+            ax1_batch = [b[0] for b in batch]
+            ax2_batch = [b[1] for b in batch]
 
-    total_runs = len(radii) * len(o2_levels) * len(no3_levels)
-    
-    with tqdm(total=total_runs, desc="Simulating Parameters", unit="run", bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
-        pbar.update(len(completed_runs))
-        for r in radii:
-            for o2 in o2_levels:
-                for no3 in no3_levels:
-                    run_id = (round(r, 2), round(o2, 2), round(no3, 2))
-                    if run_id in completed_runs:
-                        continue
-                    
-                    metrics = run_experiment(radius=r, ext_o2=o2, ext_no3=no3)
-                    results_data.append(metrics)
-                    
-                    # Save intermediate progress
-                    temp_df = pd.DataFrame(results_data)
-                    temp_df.to_csv(csv_filename, index=False)
-                    pbar.update(1)
+            print(f"\n{'─'*W}", flush=True)
+            print(f"  Chunk {chunk_num}/{n_chunks}  │  runs {i+1}–{min(i+len(batch), n_total)} "
+                  f"of {n_total}  │  {_time.strftime('%H:%M:%S')}", flush=True)
+            print(f"{'─'*W}", flush=True)
 
-    # ── 3. Final Data Organization ──
+            batched_results = run_experiment(ax1_batch, ax2_batch)
+            results_data.extend(batched_results)
+
+            # Save incrementally
+            temp_df = pd.DataFrame(results_data)
+            temp_df.to_csv(csv_filename, index=False)
+
+            _elapsed = _time.perf_counter() - _suite_t0
+            _done    = i + len(batch)
+            _rate    = _done / _elapsed if _elapsed > 0 else 0
+            _eta     = (n_total - _done) / _rate if _rate > 0 else None
+            _eta_str = f"{int(_eta//3600)}h{int(_eta%3600//60):02d}m" if _eta else 'unknown'
+            print(f"  → {_done}/{n_total} done │ elapsed {int(_elapsed//60)}m{int(_elapsed%60):02d}s"
+                  f" │ eta {_eta_str} │ CSV saved", flush=True)
+
+            pbar.update(len(batch))
+
     final_df = pd.DataFrame(results_data)
-    final_df = final_df.sort_values(by=['Radius_mm', 'Ext_O2', 'Ext_NO3'])
+    final_df = final_df.sort_values(by=[ax1_col, ax2_col])
     final_df.to_csv(csv_filename, index=False)
-    
-    print(f"\n✅ Suite Complete! Neatly organized results safely saved to {csv_filename}")
+
+    total_elapsed = _time.perf_counter() - _suite_t0
+    print(f"\n{'═'*W}")
+    print(f"  ✅ Suite complete!  │  {_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Total time   : "
+          f"{int(total_elapsed//3600)}h{int(total_elapsed%3600//60):02d}m{int(total_elapsed%60):02d}s")
+    print(f"  Results      : {csv_filename}")
+    print(f"{'═'*W}\n")
 
     generate_all_plots(csv_filename)
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

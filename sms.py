@@ -87,10 +87,16 @@ def microbial_sms_omz(var_dict, bgc):
     ddt['aox'] = aox_bio - mort(c['aox']) - graze['aox']
     ddt['zoo'] = zoo_bio - c['zoo'] * (bgc.zoo_m_l + c['zoo'] * bgc.zoo_m_q)
 
+    gross_growth = {
+        'aer': aer_bio, 'nar': nar_bio, 'nai': nai_bio, 'nao': nao_bio,
+        'nir': nir_bio, 'nio': nio_bio, 'nos': nos_bio,
+        'aoa': aoa_bio, 'nob': nob_bio, 'aox': aox_bio, 'zoo': zoo_bio
+    }
+
     # Required Placeholders
     ref = c['o2']
     ddt['po4']       = torch.zeros_like(ref)
     ddt['n2o_ammox'] = torch.zeros_like(ref)
     ddt['n2o_denit'] = (nir_bio * bgc.nir_e_n2o + nai_bio * bgc.nai_e_n2o) - (nos_bio * bgc.nos_y_oxi)
 
-    return ddt, {}
+    return ddt, gross_growth

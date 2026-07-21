@@ -2,143 +2,197 @@
 import torch
 import numpy as np
 import time as _time
-from tqdm import tqdm
 
 from bcs import apply_bcs, enforce_symmetry
-from physics import get_psi_pert, get_rhs_batched
+from physics import get_psi_pert, get_rhs_batched, apply_implicit_visc
+
+try:
+    from progress import progress
+except ImportError:
+    from tqdm import tqdm as progress
+
 
 def run_simulation(state, cfg, device):
+    """
+    Main SSP-RK3 loop with IMEX drag + viscosity.
 
-    # ── torch.no_grad() ───────────────────────────────────────────────────────
-    # The simulation never backpropagates. Disabling gradient tracking removes
-    # all autograd overhead from every tensor operation in the loop.
-    with torch.no_grad():
+    POC → DOC hydrolysis:
+        poc(t) = poc_initial * exp(-k_hyd_eff * t)
+        doc_flux(t) = k_hyd_eff * poc(t)
+    Computed every step and passed as doc_flux_t to get_rhs_batched.
+    k_hyd_eff = k_hyd_raw * bio_accel (pre-scaled in setup_physics).
+    """
+    dt           = state['dt']
+    w            = state['w']
+    tracers      = state['tracers']
+    psi_bg       = state['psi_bg']
+    u_full       = state['u_full']
+    v_full       = state['v_full']
+    tracer_names = state['tracer_names']
+    bio_tracers  = state['bio_names']
 
-        dt           = state['dt']
-        w            = state['w']
-        tracers      = state['tracers']
-        psi_bg       = state['psi_bg']
-        u_full       = state['u_full']
-        v_full       = state['v_full']
-        tracer_names = state['tracer_names']
+    impl_drag  = {s: state[f'impl_drag_{s}']  for s in ('s1', 's2', 's3')}
+    helm_denom = {s: state[f'helm_denom_{s}'] for s in ('s1', 's2', 's3')}
 
-        w_snapshots, c_snapshots, n2o_snapshots = [], [], []
-        no3_snapshots, no2_snapshots, n2_snapshots = [], [], []
-        nh4_snapshots, doc_snapshots = [], []
-        u_snapshots, v_snapshots = [], []
-        snapshot_times = []
-        n2o_ammox_snapshots, n2o_denit_snapshots = [], []
+    is_suite = getattr(cfg, 'is_suite', False)
 
-        bio_tracers   = ['aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo']
-        bio_snapshots = {name: [] for name in bio_tracers}
+    # POC hydrolysis constants (both already on device)
+    k_hyd       = state['k_hyd']        # k_hyd_raw * bio_accel  [scalar or bs,1,1]
+    poc_initial = state['poc_initial']  # mmol m⁻³               [bs, 1, 1]
 
-        n_steps           = int(cfg.Total_Time / dt)
-        snapshot_interval = max(1, int(0.03 / dt))
+    # ── Snapshot lists ────────────────────────────────────────────────────────
+    c_snapshots         = []
+    n2o_snapshots       = []
+    no3_snapshots       = []
+    no2_snapshots       = []
+    n2_snapshots        = []
+    nh4_snapshots       = []
+    doc_snapshots       = []
+    w_snapshots         = []
+    u_snapshots         = []
+    v_snapshots         = []
+    snapshot_times      = []
+    n2o_ammox_snapshots = []
+    n2o_denit_snapshots = []
+    bio_snapshots       = {name: [] for name in bio_tracers}
+    growth_rate_snapshots = {name: [] for name in bio_tracers}
 
-        # How often to run safety checks and cache flushes.
-        # These cause a GPU→CPU sync so keep them infrequent.
-        CHECK_INTERVAL = max(1000, n_steps // 200)   # ~0.5% of total steps
+    n_steps           = int(cfg.Total_Time / dt)
+    snapshot_interval = max(1, int(getattr(cfg, 'snapshot_time', 1.0) / dt))
+    CHECK_INTERVAL    = max(1000, n_steps // 200)
 
-        print(f"Total steps: {n_steps}  |  Snapshot every {snapshot_interval} steps")
-        print(f"Safety check / cache flush every {CHECK_INTERVAL} steps")
-        print("Starting 8-Tracer SSP-RK3 Loop on M2 GPU...")
-        _loop_start = _time.perf_counter()
+    print(f"Total steps: {n_steps}  |  Snapshot every {snapshot_interval} steps")
+    print(f"Safety check every {CHECK_INTERVAL} steps")
+    print("Starting SSP-RK3 loop (IMEX drag + viscosity, POC-driven DOC)...")
+    _loop_start = _time.perf_counter()
 
-        # ── Main Loop ─────────────────────────────────────────────────────────
-        for n in tqdm(range(n_steps),
-                      desc="Simulating..",
-                      ascii="⡀⡄⡆⡇▞▚░▒▓",
-                      unit="steps",
-                      bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'):
+    for n in progress(range(n_steps),
+                      desc='Simulating..',
+                      ascii='⡀⡄⡆⡇▞▚░▒▓',
+                      unit='steps',
+                      bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} '
+                                 '[{elapsed}<{remaining}, {rate_fmt}]'):
 
-            current_time = n * dt
+        current_time = n * dt
 
-            # ── STAGE 1 ───────────────────────────────────────────────────────
-            psi_pert = get_psi_pert(w, state)
-            psi_tot  = psi_pert + psi_bg
-            rhs_w, rhs_tracers = get_rhs_batched(w, tracers, psi_tot, state, cfg)
+        # ── POC → DOC hydrolysis flux ──────────────────────────────────────────
+        # poc(t) = poc_initial * exp(-k_hyd * t)
+        # doc_flux_t = k_hyd * poc(t)   [mmol m⁻³ s⁻¹]
+        poc_t      = poc_initial * torch.exp(-k_hyd * current_time)
+        doc_flux_t = k_hyd * poc_t   # shape [bs, 1, 1] — broadcasts over interior mask
 
-            w1_temp = w + dt * rhs_w
-            t1_temp = {name: tracers[name] + dt * rhs_tracers[name] for name in tracer_names}
-            w1, t1  = apply_bcs(w1_temp, t1_temp)
+        # ── SSP-RK3 Stage 1 ───────────────────────────────────────────────────
+        psi_pert = get_psi_pert(w, state)
+        psi_tot  = psi_pert + psi_bg
+        rhs_w, rhs_tracers = get_rhs_batched(w, tracers, psi_tot, state, cfg, doc_flux_t)
 
-            # ── STAGE 2 ───────────────────────────────────────────────────────
-            psi_pert = get_psi_pert(w1, state)
-            psi_tot  = psi_pert + psi_bg
-            rhs_w, rhs_tracers = get_rhs_batched(w1, t1, psi_tot, state, cfg)
+        w1_temp = (w + dt * rhs_w) * impl_drag['s1']
+        w1_temp = apply_implicit_visc(w1_temp, helm_denom['s1'], state)
+        t1_temp = {n_: tracers[n_] + dt * rhs_tracers[n_] for n_ in tracer_names}
+        w1, t1  = apply_bcs(w1_temp, t1_temp)
 
-            w2_temp = 0.75 * w + 0.25 * (w1 + dt * rhs_w)
-            t2_temp = {name: 0.75 * tracers[name] + 0.25 * (t1[name] + dt * rhs_tracers[name])
-                       for name in tracer_names}
-            w2, t2  = apply_bcs(w2_temp, t2_temp)
+        # ── SSP-RK3 Stage 2 ───────────────────────────────────────────────────
+        psi_pert = get_psi_pert(w1, state)
+        psi_tot  = psi_pert + psi_bg
+        rhs_w, rhs_tracers = get_rhs_batched(w1, t1, psi_tot, state, cfg, doc_flux_t)
 
-            # ── STAGE 3 ───────────────────────────────────────────────────────
-            psi_pert = get_psi_pert(w2, state)
-            psi_tot  = psi_pert + psi_bg
-            rhs_w, rhs_tracers = get_rhs_batched(w2, t2, psi_tot, state, cfg)
+        w2_temp = (0.75 * w + 0.25 * (w1 + dt * rhs_w)) * impl_drag['s2']
+        w2_temp = apply_implicit_visc(w2_temp, helm_denom['s2'], state)
+        t2_temp = {n_: 0.75 * tracers[n_] + 0.25 * (t1[n_] + dt * rhs_tracers[n_])
+                   for n_ in tracer_names}
+        w2, t2  = apply_bcs(w2_temp, t2_temp)
 
-            w_temp = (1.0/3.0) * w + (2.0/3.0) * (w2 + dt * rhs_w)
-            t_temp = {name: (1.0/3.0) * tracers[name] + (2.0/3.0) * (t2[name] + dt * rhs_tracers[name])
-                      for name in tracer_names}
-            w, tracers = apply_bcs(w_temp, t_temp)
+        # ── SSP-RK3 Stage 3 ───────────────────────────────────────────────────
+        psi_pert = get_psi_pert(w2, state)
+        psi_tot  = psi_pert + psi_bg
+        rhs_w, rhs_tracers = get_rhs_batched(w2, t2, psi_tot, state, cfg, doc_flux_t)
 
-            if getattr(cfg, 'use_symmetry', True):
-                w, tracers = enforce_symmetry(w, tracers, tracer_names)
+        w_temp = ((1.0 / 3.0) * w + (2.0 / 3.0) * (w2 + dt * rhs_w)) * impl_drag['s3']
+        w_temp = apply_implicit_visc(w_temp, helm_denom['s3'], state)
+        t_temp = {n_: (1.0 / 3.0) * tracers[n_] + (2.0 / 3.0) * (t2[n_] + dt * rhs_tracers[n_])
+                  for n_ in tracer_names}
+        w, tracers = apply_bcs(w_temp, t_temp)
 
+        if getattr(cfg, 'use_symmetry', True):
+            w, tracers = enforce_symmetry(w, tracers, tracer_names)
+
+        # ── Velocity field (only needed for non-suite snapshots/animation) ──────
+        if not is_suite:
             u_full.zero_()
             v_full.zero_()
-            u_full[:, 1:-1] = (psi_tot[:, 2:] - psi_tot[:, :-2]) * state['inv_2dy']
-            v_full[1:-1, :] = -(psi_tot[2:, :] - psi_tot[:-2, :]) * state['inv_2dx']
+            u_full[..., :, 1:-1] = (psi_tot[..., :, 2:] - psi_tot[..., :, :-2]) * state['inv_2dy']
+            v_full[..., 1:-1, :] = -(psi_tot[..., 2:, :] - psi_tot[..., :-2, :]) * state['inv_2dx']
 
-            # ── Snapshots ─────────────────────────────────────────────────────
-            if getattr(cfg, 'is_suite', False):
-                take_snapshot = (n == n_steps - 1)
-            else:
-                take_snapshot = (n % snapshot_interval == 0)
+        # ── Snapshots ─────────────────────────────────────────────────────────
+        if getattr(cfg, 'terminal_snapshot_only', False):
+            take_snapshot = (n == n_steps - 1)
+        else:
+            take_snapshot = (n % snapshot_interval == 0)
 
-            if take_snapshot:
-                c_snapshots.append(tracers['o2'].cpu().numpy())
-                n2o_snapshots.append(tracers['n2o'].cpu().numpy())
-                n2o_ammox_snapshots.append(tracers['n2o_ammox'].cpu().numpy())
-                n2o_denit_snapshots.append(tracers['n2o_denit'].cpu().numpy())
-                no3_snapshots.append(tracers['no3'].cpu().numpy())
-                no2_snapshots.append(tracers['no2'].cpu().numpy())
-                n2_snapshots.append(tracers['n2'].cpu().numpy())
-                nh4_snapshots.append(tracers['nh4'].cpu().numpy())
-                doc_snapshots.append(tracers['doc'].cpu().numpy())
-                w_snapshots.append(w.cpu().numpy())
-                u_snapshots.append(u_full.cpu().numpy())
-                v_snapshots.append(v_full.cpu().numpy())
-                snapshot_times.append(current_time)
+        if take_snapshot:
+            # Non-suite (main.py, bs=1): squeeze to a plain 2D array, as before.
+            # Suite mode (bs>1 sweeps): keep the full batch dim — squeezing to
+            # [0] here was the actual bug silently discarding every batch member
+            # except the first, which is why bs>1 never worked in run_suite.py.
+            def snap(t): return (t if is_suite else t[0]).cpu().numpy().astype(np.float32)
 
-                for name in bio_tracers:
-                    bio_snapshots[name].append(tracers[name].cpu().numpy())
+            # Get instantaneous exact growth rates (kept in suite mode too)
+            from sms import microbial_sms_omz
+            interior = {n: tracers[n][..., 1:-1, 1:-1] for n in tracer_names}
+            _, gross_growth = microbial_sms_omz(interior, state['bgc'])
+            # -------------------------------------------------
 
-            # ── Periodic maintenance (infrequent to avoid GPU→CPU stalls) ────
-            if n % CHECK_INTERVAL == 0:
+            c_snapshots.append(snap(tracers['o2']))
+            n2o_snapshots.append(snap(tracers['n2o']))
+            n2o_ammox_snapshots.append(snap(tracers['n2o_ammox']))
+            n2o_denit_snapshots.append(snap(tracers['n2o_denit']))
+            no3_snapshots.append(snap(tracers['no3']))
+            no2_snapshots.append(snap(tracers['no2']))
+            n2_snapshots.append(snap(tracers['n2']))
+            nh4_snapshots.append(snap(tracers['nh4']))
+            doc_snapshots.append(snap(tracers['doc']))
+            snapshot_times.append(current_time)
+            if not is_suite:
+                # u/v aren't rebuilt in suite mode (see above) — nothing to snapshot.
+                w_snapshots.append(snap(w))
+                u_snapshots.append(snap(u_full))
+                v_snapshots.append(snap(v_full))
+            for name in bio_tracers:
+                bio_snapshots[name].append(snap(tracers[name]))
 
-                # Flush the MPS allocator cache to keep memory tidy.
-                # Kept intentionally infrequent — every call stalls the pipeline.
+                # Calculate specific growth rate (1/s) and convert to day⁻¹
+                mu_s = gross_growth[name] / (interior[name] + 1e-15)
+                mu_d = mu_s * 86400.0 * state['bio_accel']
+                growth_rate_snapshots[name].append(snap(mu_d))
+
+        # ── Periodic maintenance ───────────────────────────────────────────────
+        if n % CHECK_INTERVAL == 0:
+            dev_type = getattr(device, 'type', str(device))
+            if dev_type == 'mps' and hasattr(torch, 'mps'):
                 torch.mps.empty_cache()
+            elif dev_type == 'cuda' and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-                # NaN / Inf safety kill-switch
-                if not torch.isfinite(w).all().item():
-                    print(f"\n🚨 FATAL: NaN/Inf in vorticity at step {n} (t={current_time:.3f}s)")
+            if not torch.isfinite(w).all().item():
+                print(f'\n🚨 FATAL: NaN/Inf in vorticity at step {n} (t={current_time:.3f}s)')
+                break
+
+            crashed = False
+            for name, tensor in tracers.items():
+                if not torch.isfinite(tensor).all().item():
+                    print(f'\n🚨 FATAL: NaN/Inf in tracer \'{name}\' at step {n}'
+                          f' (t={current_time:.3f}s)')
+                    crashed = True
                     break
+            if crashed:
+                break
 
-                for name, tensor in tracers.items():
-                    if not torch.isfinite(tensor).all().item():
-                        print(f"\n🚨 FATAL: NaN/Inf in tracer '{name}' at step {n} (t={current_time:.3f}s)")
-                        break
-                else:
-                    continue   # inner for-loop completed without break → keep going
-                break           # inner loop hit break → exit outer loop too
+    total_elapsed = _time.perf_counter() - _loop_start
+    print(f'\nSimulation complete in {total_elapsed:.1f}s.')
 
-        # ── End of loop ───────────────────────────────────────────────────────
-        total_elapsed = _time.perf_counter() - _loop_start
-        print(f"\nSimulation complete in {total_elapsed:.1f}s. Generating animations...")
-
-        return (c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
-                n2_snapshots, doc_snapshots, nh4_snapshots, w_snapshots,
-                u_snapshots, v_snapshots, snapshot_times,
-                n2o_ammox_snapshots, n2o_denit_snapshots, bio_snapshots)
+    return (c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
+            n2_snapshots, doc_snapshots, nh4_snapshots,
+            w_snapshots, u_snapshots, v_snapshots,
+            snapshot_times,
+            n2o_ammox_snapshots, n2o_denit_snapshots,
+            bio_snapshots, growth_rate_snapshots)

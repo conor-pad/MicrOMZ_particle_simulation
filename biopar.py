@@ -83,33 +83,34 @@ class BioPar:
 
     # ── POC Hydrolysis (Solid -> Dissolved) ──
     # Typical rates are ~0.1 to 1.0 per day. 
-    # 1e-4 1/s is accelerated slightly so you can observe the particle shrink in your simulation timeframe!
-    kHyd: float = 1e-4        # Hydrolysis rate of POC to DOC (1/s)
+    k_hyd: float = 1e-6        # Hydrolysis rate of POC to DOC (1/s)
 
 
-    # ── MICROBIAL PARAMS (from ftype_params.m) ──
+    # HIGHER K VALUES MEAN THE MICROBES ARE LESS EFFICIENT AT LOW FOOD CONCENTRATIONS.  LOWER K VALUES MEAN THEY ARE MORE EFFICIENT AT LOW FOOD CONCENTRATIONS.
+
+    # ── MICROBIAL PARAMS  ──
     # aer (aerobic heterotroph)
-    aer_vmax_oxi: float = 2.3148e-05
-    aer_vmax_red: float = 2.4769e-05
+    aer_vmax_oxi: float = 2.3148e-05 
+    aer_vmax_red: float = 2.4769e-05 
     aer_k_oxi: float = 0.2
-    aer_k_red: float = 20.0
+    aer_k_red: float = 10 # 20.0
     aer_y_oxi: float = 4.00 # amount of oxidant (o2) needed to grow 1 unit of biomass ; number depends on free energy gain from each oxidant molecule
-    aer_y_red: float = 1 # 4.28 # amount of DOC needed to grow 1 unit of biomass
+    aer_y_red: float = 4.28 # amount of DOC needed to grow 1 unit of biomass
     aer_e_nh4: float = 0.39
 
     # nar (no3 to no2 heterotroph)
-    nar_vmax_oxi: float = 2.3148e-05
-    nar_vmax_red: float = 2.4769e-05
+    nar_vmax_oxi: float = 2.3148e-05  
+    nar_vmax_red: float = 2.4769e-05  
     nar_k_oxi: float = 1.0
     nar_k_red: float = 20.0
     nar_y_oxi: float = 12.05 # amount of oxidant (no3) needed to grow 1 unit of biomass
-    nar_y_red: float = 6.01 # amount of DOC needed to grow 1 unit of biomass
+    nar_y_red: float = 6.01 # amount of DOC needed to grow 1 unit of biomass # needs more DOC than aer so they'll be outcompeted by aer when O2 is present
     nar_e_no2: float = 12.05
     nar_e_nh4: float = 0.62
 
     # nai (no3 to n2o heterotroph)
-    nai_vmax_oxi: float = 2.3148e-05
-    nai_vmax_red: float = 2.4769e-05
+    nai_vmax_oxi: float = 2.3148e-05  
+    nai_vmax_red: float = 2.4769e-05  
     nai_k_oxi: float = 1.0
     nai_k_red: float = 20.0
     nai_y_oxi: float = 6.22
@@ -118,8 +119,8 @@ class BioPar:
     nai_e_nh4: float = 0.65
 
     # nao (no3 to n2 heterotroph)
-    nao_vmax_oxi: float = 2.3148e-05
-    nao_vmax_red: float = 2.4769e-05
+    nao_vmax_oxi: float = 2.3148e-05  
+    nao_vmax_red: float = 2.4769e-05  
     nao_k_oxi: float = 1.0
     nao_k_red: float = 20.0
     nao_y_oxi: float = 5.50
@@ -128,8 +129,8 @@ class BioPar:
     nao_e_nh4: float = 0.72
 
     # nir (no2 to n2o heterotroph)
-    nir_vmax_oxi: float = 2.3148e-05
-    nir_vmax_red: float = 2.4769e-05
+    nir_vmax_oxi: float = 2.3148e-05  
+    nir_vmax_red: float = 2.4769e-05  
     nir_k_oxi: float = 1.0
     nir_k_red: float = 20.0
     nir_y_oxi: float = 8.75
@@ -138,8 +139,8 @@ class BioPar:
     nir_e_nh4: float = 0.43
 
     # nio (no2 to n2 heterotroph)
-    nio_vmax_oxi: float = 2.3148e-05
-    nio_vmax_red: float = 2.4769e-05
+    nio_vmax_oxi: float = 2.3148e-05  
+    nio_vmax_red: float = 2.4769e-05  
     nio_k_oxi: float = 1.0
     nio_k_red: float = 20.0
     nio_y_oxi: float = 6.07
@@ -148,8 +149,8 @@ class BioPar:
     nio_e_nh4: float = 0.45
 
     # nos (n2o to n2 heterotroph)
-    nos_vmax_oxi: float = 2.3148e-05
-    nos_vmax_red: float = 2.4769e-05
+    nos_vmax_oxi: float = 2.3148e-05  
+    nos_vmax_red: float = 2.4769e-05  
     nos_k_oxi: float = 0.4
     nos_k_red: float = 20.0
     nos_y_oxi: float = 5.54
@@ -158,8 +159,8 @@ class BioPar:
     nos_e_nh4: float = 0.24
 
     # aoa (nh4 to no2 chemoautotroph)
-    aoa_vmax_oxi: float = 1.2668e-04
-    aoa_vmax_red: float = 9.4482e-05
+    aoa_vmax_oxi: float = 1.2668e-04  
+    aoa_vmax_red: float = 9.4482e-05  
     aoa_k_oxi: float = 0.333
     aoa_k_red: float = 0.134
     aoa_y_oxi: float = 8.16
@@ -167,8 +168,8 @@ class BioPar:
     aoa_e_no2: float = 7.96
 
     # nob (no2 to no3 chemoautotroph)
-    nob_vmax_oxi: float = 1.2043e-04
-    nob_vmax_red: float = 2.7557e-04
+    nob_vmax_oxi: float = 1.2043e-04  
+    nob_vmax_red: float = 2.7557e-04  
     nob_k_oxi: float = 0.778
     nob_k_red: float = 0.254
     nob_y_oxi: float = 6.94
@@ -176,8 +177,8 @@ class BioPar:
     nob_e_no3: float = 15.87
 
     # aox (anammox)
-    aox_vmax_oxi: float = 5.1244e-05
-    aox_vmax_red: float = 4.3287e-05
+    aox_vmax_oxi: float = 5.1244e-05  
+    aox_vmax_red: float = 4.3287e-05  
     aox_k_oxi: float = 0.45
     aox_k_red: float = 0.45
     aox_y_oxi: float = 17.71
@@ -185,9 +186,9 @@ class BioPar:
     aox_e_no3: float = 2.57
     aox_e_n2: float = 14.95
 
-    # ── loss parameters  ──
-    m_l: float = 0.02 / 86400  # Linear loss (1/s)
-    m_q: float = 0.10 / 86400  # Quadratic loss (1 / uM C s)
+    # ── loss parameters (all) ──
+    m_l: float = 0.02 / 86400 # Linear loss (1/s) 
+    m_q: float = 0.10 / 86400 # Quadratic loss (1 / uM C s)
     bmin: float = 1e-10        # Minimum biomass
 
     # ── zooplankton grazer ──

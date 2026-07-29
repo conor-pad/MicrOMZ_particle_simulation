@@ -96,6 +96,7 @@ def microbial_sms_omz(var_dict, bgc):
     # Required Placeholders
     ref = c['o2']
     ddt['po4']       = torch.zeros_like(ref)
+    ddt['poc']       = torch.zeros_like(ref)  # hydrolysis sink applied externally in physics.py
     ddt['n2o_ammox'] = torch.zeros_like(ref)
     ddt['n2o_denit'] = (nir_bio * bgc.nir_e_n2o + nai_bio * bgc.nai_e_n2o) - (nos_bio * bgc.nos_y_oxi)
 

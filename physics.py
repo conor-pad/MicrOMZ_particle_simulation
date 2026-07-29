@@ -13,13 +13,18 @@ def setup_physics(cfg):
     Initialises the grid, calculates dt, and pre-allocates all GPU tensors.
 
     Carbon source design:
-      POC is the ONLY carbon source. It hydrolyses via first-order decay:
-          doc_flux(t) = k_hyd * poc(t)   where  poc(t) = poc_initial * exp(-k_hyd * t)
-      doc_flux is computed every timestep in loop.py and passed here as doc_flux_t.
-      There is NO doc_flux_rate config parameter and NO doc_initial_core.
+      POC is the ONLY carbon source, and is now a formal tracer (in its own
+      no-transport category alongside bio_names) rather than an analytical
+      decay — being solid particulate matter bound to the sinking aggregate,
+      it does NOT advect or diffuse. It hydrolyses via a biomass-driven,
+      saturating flux computed every timestep inside get_rhs_batched():
+          doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
+      This flux is added to DOC (which does advect/diffuse normally) and
+      subtracted from POC in place. There is NO doc_flux_rate config
+      parameter and NO doc_initial_core.
 
-    The same BIO_ACCEL factor is applied to k_hyd so the POC→DOC supply keeps
-    pace with the accelerated microbial consumption rates.
+    The same BIO_ACCEL factor is applied to k_hyd_max so the POC→DOC supply
+    keeps pace with the accelerated microbial consumption rates.
     """
     # ── Device ────────────────────────────────────────────────────────────────
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
@@ -95,7 +100,12 @@ def setup_physics(cfg):
     bio_names = [
         'aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo'
     ]
-    tracer_names = chem_names + bio_names
+    # 'poc' is solid particulate carbon bound to the sinking aggregate — like the
+    # bio tracers it must NOT advect or diffuse. It isn't part of bio_names because
+    # loop.py's growth-rate snapshotting indexes sms.py's gross_growth dict by
+    # bio_names, which has no 'poc' entry. It gets its own no-transport RHS branch
+    # in get_rhs_batched() below (hydrolysis sink only).
+    tracer_names = chem_names + bio_names + ['poc']
 
     # ── State dict ────────────────────────────────────────────────────────────
     state = {}
@@ -135,17 +145,18 @@ def setup_physics(cfg):
 
 
     # THIS IS BEING ACCELERATED WITH BIO AMP BTW!!!!!!!!!
-    # k_hyd is scaled by BIO_ACCEL so DOC supply keeps pace with accelerated biology.
-    # POC decays as:  poc(t) = poc_initial * exp(-k_hyd_eff * t)
-    # DOC flux:       doc_flux(t) = k_hyd_eff * poc(t)
-    # This is computed every step in loop.py using state['k_hyd'] and state['poc_initial'].
-    k_hyd_raw = float(state['bgc'].k_hyd)              # s⁻¹ from biopar
-    k_hyd_eff = k_hyd_raw * state['bio_accel']         # accelerated
+    # k_hyd_max is scaled by BIO_ACCEL so DOC supply keeps pace with accelerated biology.
+    # Hydrolysis is now biomass-driven and saturating (computed every step in
+    # get_rhs_batched() using state['k_hyd_max'] and state['K_POC']):
+    #     doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
+    k_hyd_max_raw = float(state['bgc'].k_hyd_max)        # per unit biomass, s⁻¹, from biopar
+    k_hyd_max_eff = k_hyd_max_raw * state['bio_accel']   # accelerated
 
-    state['k_hyd']       = torch.tensor(k_hyd_eff,           dtype=torch.float32, device=device)
-    state['poc_initial'] = torch.tensor(poc_initial_density,  dtype=torch.float32, device=device)
+    state['k_hyd_max'] = torch.tensor(k_hyd_max_eff,          dtype=torch.float32, device=device)
+    state['K_POC']     = torch.tensor(state['bgc'].K_POC,     dtype=torch.float32, device=device)
     print(f"POC | density={poc_initial_density.flat[0]:.2e} mmol/m³  "
-          f"k_hyd_raw={k_hyd_raw:.2e}/s  k_hyd_eff={k_hyd_eff:.2e}/s")
+          f"k_hyd_max_raw={k_hyd_max_raw:.2e}/s  k_hyd_max_eff={k_hyd_max_eff:.2e}/s  "
+          f"K_POC={state['bgc'].K_POC:.2e}")
 
     # ── Static GPU arrays ─────────────────────────────────────────────────────
     state['psi_bg']        = torch.tensor(psi_bg_np,        dtype=torch.float32, device=device)
@@ -169,6 +180,13 @@ def setup_physics(cfg):
             # DOC starts at zero everywhere — it is produced solely by POC hydrolysis.
             state['tracers'][name] = torch.zeros(
                 (bs, cfg.Nx, cfg.Ny), dtype=torch.float32, device=device)
+
+        elif name == 'poc':
+            # POC starts confined to the particle at poc_initial_density —
+            # the solid carbon reservoir that hydrolysis draws down over time.
+            arr = poc_initial_density * particle_mask_np
+            state['tracers'][name] = torch.tensor(
+                arr.astype(np.float32), device=device)
 
         elif name in set(bio_names):
             # Bugs initialised inside the particle using the value from bcs.inflow.
@@ -258,13 +276,18 @@ def apply_implicit_visc(w_in, helm_denom, state):
 
 # ── RHS ───────────────────────────────────────────────────────────────────────
 
-def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg, doc_flux_t):
+def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
     """
     Batched RHS for vorticity (Arakawa) and tracers.
 
-    doc_flux_t : tensor [bs, 1, 1] — k_hyd_eff * poc(t), computed each step in loop.py.
-                 Added to DOC inside the particle mask only. Units: mmol m⁻³ s⁻¹.
-                 NOT multiplied by bio_accel here (k_hyd is already pre-scaled).
+    POC → DOC hydrolysis is biomass-driven and saturating, computed internally
+    here from the current heterotroph biomass and POC concentration:
+        doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
+    k_hyd_max is already pre-scaled by bio_accel in setup_physics. doc_flux is
+    added to DOC's RHS (DOC advects/diffuses normally) and subtracted from
+    POC's RHS. POC itself gets NO advection or diffusion — like the bio
+    tracers, it's solid material bound to the particle; hydrolysis is its
+    only source/sink term.
 
     Biology (SMS) is scaled by bio_accel.
     Mortality is additionally scaled by mort_amp before the SMS call.
@@ -331,6 +354,16 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg, doc_flux_t):
     # ── 4. SMS ────────────────────────────────────────────────────────────────
     interior_tracers = {n: tracers_dict[n][..., 1:-1, 1:-1] for n in state['tracer_names']}
 
+    # ── POC → DOC hydrolysis (biomass-driven, saturating) ─────────────────────
+    # doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
+    # Only the DOC-consuming heterotrophs (not the chemoautotrophs aoa/nob/aox)
+    # drive hydrolysis. k_hyd_max is already pre-scaled by bio_accel.
+    total_het_biomass = sum(interior_tracers[b] for b in
+                             ('aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos'))
+    poc_interior = interior_tracers['poc']
+    doc_flux = (state['k_hyd_max'] * total_het_biomass *
+                (poc_interior / (state['K_POC'] + poc_interior)))
+
     bgc = state['bgc']
     orig_m_l,  orig_m_q  = bgc.m_l,     bgc.m_q
     orig_zm_l, orig_zm_q = bgc.zoo_m_l, bgc.zoo_m_q
@@ -366,15 +399,18 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg, doc_flux_t):
     for i, name in enumerate(chem_names):
         rhs_t = tracer_advection[i] + state['K'] * lap[i + 1] + ddt[name] * bio_accel
         if name == 'doc':
-            # POC → DOC hydrolysis: doc_flux_t = k_hyd_eff * poc(t), [bs,1,1]
-            # k_hyd is already pre-scaled by bio_accel in setup_physics.
-            # Deposit into particle mask only.
-            rhs_t = rhs_t + doc_flux_t * state['particle_mask'][..., 1:-1, 1:-1]
+            # POC → DOC hydrolysis source (biomass-driven, saturating in POC).
+            rhs_t = rhs_t + doc_flux
         state['_rhs_tracers'][name][..., 1:-1, 1:-1] = rhs_t
 
     # ── 6. Bio tracer RHS  (SMS only — no advection, no diffusion) ───────────
     for name in bio_names:
         state['_rhs_tracers'][name][..., 1:-1, 1:-1] = ddt[name] * bio_accel
+
+    # ── 7. POC RHS  (solid substrate — no advection, no diffusion) ───────────
+    # Hydrolysis sink only; NOT multiplied by bio_accel again here since
+    # k_hyd_max is already pre-scaled by bio_accel in setup_physics.
+    state['_rhs_tracers']['poc'][..., 1:-1, 1:-1] = -doc_flux
 
     return state['_rhs_buf_w'], state['_rhs_tracers']
 

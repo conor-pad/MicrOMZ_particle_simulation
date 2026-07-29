@@ -81,25 +81,28 @@ class BioPar:
     Ji_a: float = 0.2
     Ji_b: float = 0.08
 
-    # ── POC Hydrolysis (Solid -> Dissolved) ──
-    # Typical rates are ~0.1 to 1.0 per day. 
-    k_hyd: float = 1e-6        # Hydrolysis rate of POC to DOC (1/s)
+    # ── POC Hydrolysis (Solid -> Dissolved, biomass-driven & saturating) ──
+    # DOC_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
+    # k_hyd_max must comfortably exceed the community's summed max carbon
+    # demand (Σ Vmax_red / Y_red) so hydrolysis never starves the heterotrophs.
+    k_hyd_max: float = 1 # e-3    # Max hydrolysis rate per unit heterotroph biomass (1/s per mmol C m⁻³)
+    K_POC: float = 1e4         # Half-saturation constant for solid POC (mmol C m⁻³)
 
 
     # HIGHER K VALUES MEAN THE MICROBES ARE LESS EFFICIENT AT LOW FOOD CONCENTRATIONS.  LOWER K VALUES MEAN THEY ARE MORE EFFICIENT AT LOW FOOD CONCENTRATIONS.
 
     # ── MICROBIAL PARAMS  ──
     # aer (aerobic heterotroph)
-    aer_vmax_oxi: float = 2.3148e-05 
+    aer_vmax_oxi: float = 2.3148e-05
     aer_vmax_red: float = 2.4769e-05 
     aer_k_oxi: float = 0.2
-    aer_k_red: float = 10 # 20.0
+    aer_k_red: float = 10 # 20.0? 10 is original
     aer_y_oxi: float = 4.00 # amount of oxidant (o2) needed to grow 1 unit of biomass ; number depends on free energy gain from each oxidant molecule
     aer_y_red: float = 4.28 # amount of DOC needed to grow 1 unit of biomass
     aer_e_nh4: float = 0.39
 
     # nar (no3 to no2 heterotroph)
-    nar_vmax_oxi: float = 2.3148e-05  
+    nar_vmax_oxi: float = 2.3148e-05 
     nar_vmax_red: float = 2.4769e-05  
     nar_k_oxi: float = 1.0
     nar_k_red: float = 20.0
@@ -113,7 +116,7 @@ class BioPar:
     nai_vmax_red: float = 2.4769e-05  
     nai_k_oxi: float = 1.0
     nai_k_red: float = 20.0
-    nai_y_oxi: float = 6.22
+    nai_y_oxi: float = 6.22 # this can be thought of as the "cost" in DOC it takes to grow 1 unit of biomass
     nai_y_red: float = 6.18
     nai_e_n2o: float = 3.11
     nai_e_nh4: float = 0.65

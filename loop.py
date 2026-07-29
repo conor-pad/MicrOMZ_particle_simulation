@@ -16,11 +16,10 @@ def run_simulation(state, cfg, device):
     """
     Main SSP-RK3 loop with IMEX drag + viscosity.
 
-    POC → DOC hydrolysis:
-        poc(t) = poc_initial * exp(-k_hyd_eff * t)
-        doc_flux(t) = k_hyd_eff * poc(t)
-    Computed every step and passed as doc_flux_t to get_rhs_batched.
-    k_hyd_eff = k_hyd_raw * bio_accel (pre-scaled in setup_physics).
+    POC → DOC hydrolysis is biomass-driven and saturating:
+        doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
+    This is now computed internally inside get_rhs_batched() every stage,
+    using the current POC tracer field and heterotroph biomass.
     """
     dt           = state['dt']
     w            = state['w']
@@ -35,10 +34,6 @@ def run_simulation(state, cfg, device):
     helm_denom = {s: state[f'helm_denom_{s}'] for s in ('s1', 's2', 's3')}
 
     is_suite = getattr(cfg, 'is_suite', False)
-
-    # POC hydrolysis constants (both already on device)
-    k_hyd       = state['k_hyd']        # k_hyd_raw * bio_accel  [scalar or bs,1,1]
-    poc_initial = state['poc_initial']  # mmol m⁻³               [bs, 1, 1]
 
     # ── Snapshot lists ────────────────────────────────────────────────────────
     c_snapshots         = []
@@ -75,16 +70,10 @@ def run_simulation(state, cfg, device):
 
         current_time = n * dt
 
-        # ── POC → DOC hydrolysis flux ──────────────────────────────────────────
-        # poc(t) = poc_initial * exp(-k_hyd * t)
-        # doc_flux_t = k_hyd * poc(t)   [mmol m⁻³ s⁻¹]
-        poc_t      = poc_initial * torch.exp(-k_hyd * current_time)
-        doc_flux_t = k_hyd * poc_t   # shape [bs, 1, 1] — broadcasts over interior mask
-
         # ── SSP-RK3 Stage 1 ───────────────────────────────────────────────────
         psi_pert = get_psi_pert(w, state)
         psi_tot  = psi_pert + psi_bg
-        rhs_w, rhs_tracers = get_rhs_batched(w, tracers, psi_tot, state, cfg, doc_flux_t)
+        rhs_w, rhs_tracers = get_rhs_batched(w, tracers, psi_tot, state, cfg)
 
         w1_temp = (w + dt * rhs_w) * impl_drag['s1']
         w1_temp = apply_implicit_visc(w1_temp, helm_denom['s1'], state)
@@ -94,7 +83,7 @@ def run_simulation(state, cfg, device):
         # ── SSP-RK3 Stage 2 ───────────────────────────────────────────────────
         psi_pert = get_psi_pert(w1, state)
         psi_tot  = psi_pert + psi_bg
-        rhs_w, rhs_tracers = get_rhs_batched(w1, t1, psi_tot, state, cfg, doc_flux_t)
+        rhs_w, rhs_tracers = get_rhs_batched(w1, t1, psi_tot, state, cfg)
 
         w2_temp = (0.75 * w + 0.25 * (w1 + dt * rhs_w)) * impl_drag['s2']
         w2_temp = apply_implicit_visc(w2_temp, helm_denom['s2'], state)
@@ -105,7 +94,7 @@ def run_simulation(state, cfg, device):
         # ── SSP-RK3 Stage 3 ───────────────────────────────────────────────────
         psi_pert = get_psi_pert(w2, state)
         psi_tot  = psi_pert + psi_bg
-        rhs_w, rhs_tracers = get_rhs_batched(w2, t2, psi_tot, state, cfg, doc_flux_t)
+        rhs_w, rhs_tracers = get_rhs_batched(w2, t2, psi_tot, state, cfg)
 
         w_temp = ((1.0 / 3.0) * w + (2.0 / 3.0) * (w2 + dt * rhs_w)) * impl_drag['s3']
         w_temp = apply_implicit_visc(w_temp, helm_denom['s3'], state)

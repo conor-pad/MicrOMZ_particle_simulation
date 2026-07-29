@@ -36,19 +36,19 @@ logging.getLogger('torch').setLevel(logging.ERROR)
 #   'o2_radius'  — Ambient O₂ (mmol m⁻³)      ×  Particle Radius (mm)
 #   'radius_poc' — Particle Radius (mm)       ×  Initial POC (mmol C m⁻³)
 #
-SWEEP_MODE = 'poc_o2'
+SWEEP_MODE = 'o2_radius'
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ── SWEEP AXIS DEFINITIONS ────────────────────────────────────────────────────
 # ═════════════════════════════════════════════════════════════════════════════
 
-N_POC      = 8
-N_O2       = 6
-N_RADIUS   = 5
+N_POC      = 14
+N_O2       = 14
+N_RADIUS   = 14
 POC_LEVELS    = np.linspace(50_000, 800_000, N_POC).tolist()   # mmol C m⁻³
 O2_LEVELS     = np.linspace(1.0, 25.0, N_O2).tolist()          # mmol O₂ m⁻³
-RADIUS_LEVELS = np.linspace(0.5, 5.0, N_RADIUS).tolist()       # mm
+RADIUS_LEVELS = np.linspace(0.5, 1.0, N_RADIUS).tolist()       # mm
 
 # ═════════════════════════════════════════════════════════════════════════════
 # ── FIXED PARAMETERS ──────────────────────────────────────────────────────────
@@ -56,8 +56,14 @@ RADIUS_LEVELS = np.linspace(0.5, 5.0, N_RADIUS).tolist()       # mm
 RADIUS_FIXED = 1.0     # mm  — fixed for poc_o2
 NO3_FIXED    = 10.0    # mmol NO₃ m⁻³
 O2_FIXED     = 6.0     # mmol O₂ m⁻³   — fixed for radius_poc
-POC_FIXED    = 400_000 # mmol C m⁻³    — fixed for o2_radius
+POC_FIXED    = 850_000 # mmol C m⁻³    — fixed for o2_radius
 BIO_ACCEL    = 1.0
+VMAX_MULTIPLIER = 300.0
+INITIAL_AEROBIC = 8.0
+
+# All functional groups with vmax_oxi/vmax_red params — VMAX_MULTIPLIER scales
+# every one of these. 'zoo' is excluded — it has no vmax_oxi/red (uses zoo_umax).
+BUG_PREFIXES = ['aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox']
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -89,7 +95,7 @@ def get_sweep_meta():
             axis1_label = 'Initial POC Density (mmol C m⁻³)',
             axis2_label = 'Ambient O₂ (mmol O₂ m⁻³)',
             csv_name    = 'outputs/MicrOMZ_POC_O2_Sweep.csv',
-            chunk_size  = 8,
+            chunk_size  = len(O2_LEVELS),
         )
     elif SWEEP_MODE == 'o2_radius':
         return dict(
@@ -100,7 +106,7 @@ def get_sweep_meta():
             axis1_label = 'Ambient O₂ (mmol O₂ m⁻³)',
             axis2_label = 'Particle Radius (mm)',
             csv_name    = 'outputs/MicrOMZ_O2_Radius_Sweep.csv',
-            chunk_size  = 8,
+            chunk_size  = len(O2_LEVELS),
         )
     elif SWEEP_MODE == 'radius_poc':
         return dict(
@@ -111,7 +117,7 @@ def get_sweep_meta():
             axis1_label = 'Particle Radius (mm)',
             axis2_label = 'Initial POC Density (mmol C m⁻³)',
             csv_name    = 'outputs/MicrOMZ_Radius_POC_Sweep.csv',
-            chunk_size  = 8,
+            chunk_size  = len(POC_LEVELS),
         )
     else:
         raise ValueError(f"Unknown SWEEP_MODE: '{SWEEP_MODE}'. "
@@ -156,9 +162,11 @@ def run_experiment(axis1_vals, axis2_vals):
     cfg.batch_size             = bs
     cfg.is_suite               = True
     cfg.terminal_snapshot_only = True
+    cfg.vmax_multiplier        = VMAX_MULTIPLIER
+    cfg.initial_aerobic_biomass = INITIAL_AEROBIC
     cfg.radius                 = radii
-    cfg.U_bg                   = 2.2 * (cfg.radius / 1.0) ** 0.56
-    cfg.Lx                     = 20.0 * cfg.radius
+    cfg.U_bg                   = 1.6 * (cfg.radius / 1.0) ** 0.56
+    cfg.Lx                     = 10.0 * cfg.radius
     cfg.Ly                     = 10.0 * cfg.radius
     cfg.cx                     = 5.0  * cfg.radius
     cfg.cy                     = cfg.Ly / 2.0
@@ -167,19 +175,41 @@ def run_experiment(axis1_vals, axis2_vals):
     cfg.K                      = cfg.nu / cfg.Sc_target
     # Total_Time must be a single scalar shared by the whole batch — take the
     # worst case across members (identical to the old value when radius is fixed).
-    cfg.Total_Time             = float(np.max(5.0 * cfg.Lx / cfg.U_bg))
+    cfg.Total_Time             = 650 # float(np.max(25.0 * cfg.Lx / cfg.U_bg))
     cfg.BIO_ACCEL               = BIO_ACCEL
     cfg.MORT_AMP                = mort_arr
 
     # ── Patch boundary conditions (per-member arrays) ───────────────────────
     bcs.inflow.o2  = o2_arr.reshape(bs, 1)
     bcs.inflow.no3 = no3_arr.reshape(bs, 1)
+    bcs.inflow.aer = INITIAL_AEROBIC   # scalar — applies uniformly across the batch
 
     # ── Silence per-run stdout ───────────────────────────────────────────────
     original_stdout = sys.stdout
     sys.stdout = open(os.devnull, 'w')
 
     device_, state = setup_physics(cfg)
+
+    # setup_physics() just instantiated a fresh BioPar() with unscaled defaults
+    # (~2.3e-5 s⁻¹) — apply VMAX_MULTIPLIER to every functional group here so
+    # growth is actually fast enough to matter within Total_Time.
+    bgc = state['bgc']
+    for prefix in BUG_PREFIXES:
+        setattr(bgc, f'{prefix}_vmax_oxi', getattr(bgc, f'{prefix}_vmax_oxi') * VMAX_MULTIPLIER)
+        setattr(bgc, f'{prefix}_vmax_red', getattr(bgc, f'{prefix}_vmax_red') * VMAX_MULTIPLIER)
+
+    # ── Save Batch Physics Metrics to Text File ─────────────────────────────
+    with open('outputs/batch_physics_log.txt', 'a') as f:
+        f.write(f"Radius: {float(radii[0]):.2f} mm\n"
+                f"  dx:         {float(np.atleast_1d(cfg.dx)[0]):.4e} m\n"
+                f"  dy:         {float(np.atleast_1d(cfg.dy)[0]):.4e} m\n"
+                f"  U_bg:       {float(np.atleast_1d(cfg.U_bg)[0]):.4f} m/s\n"
+                f"  Total_Time: {cfg.Total_Time:.1f} s\n"
+                f"  K:          {float(np.atleast_1d(cfg.K)[0]):.4e} m²/s\n"
+                f"  VMAX_MULT:  {VMAX_MULTIPLIER:.1f}×  (aer_vmax_oxi eff="
+                f"{bgc.aer_vmax_oxi:.4e}/s)\n"
+                f"  Init_Aer:   {INITIAL_AEROBIC:.2f} mmol C m⁻³\n"
+                f"{'-'*30}\n")
 
     # Override POC density (set after setup_physics so it can read k_hyd)
     state['poc_initial'] = torch.tensor(
@@ -266,6 +296,18 @@ def run_experiment(axis1_vals, axis2_vals):
     }
     total_bio_core_b = sum(bio_core_amounts_b.values())
 
+    # Relative biomass growth factor (terminal / initial core biomass).
+    # Bio tracers are seeded uniformly at their bcs.inflow concentration
+    # everywhere inside particle_mask (physics.py tracer-init), so initial
+    # total core biomass = (sum of all group seed concentrations) * core volume.
+    # bcs.inflow.aer already reflects INITIAL_AEROBIC (patched above); the rest
+    # are their dataclass defaults — read live so this never goes stale.
+    initial_bio_density_total = sum(getattr(bcs.inflow, n) for n in state['bio_names'])
+    bio_growth_factor_b = torch.where(
+        total_core_vol_b > 0,
+        total_bio_core_b / (initial_bio_density_total * total_core_vol_b),
+        torch.zeros_like(total_core_vol_b))
+
     bio_names_list = state['bio_names']
     bio_stack       = torch.stack([bio_core_amounts_b[n] for n in bio_names_list])  # [n_bugs, bs]
     dom_idx_b       = bio_stack.argmax(dim=0)   # [bs]
@@ -304,6 +346,7 @@ def run_experiment(axis1_vals, axis2_vals):
             'Frac_Anoxic_Core': frac_anoxic,
             # ── Biomass ──
             'Total_Bio_Core_mmol':  total_bio_core_b[b].item(),
+            'Bio_Growth_Factor':    bio_growth_factor_b[b].item(),
             'Dominant_Bug':         dominant_bug,
             # ── Individual functional group core biomass ──
             **{f'Bio_Core_{n}_mmol': bio_core_amounts_b[n][b].item() for n in bio_names_list},
@@ -365,6 +408,37 @@ def generate_all_plots(csv_filename):
         plt.savefig(f'outputs/{filename}', dpi=300, bbox_inches='tight')
         plt.close()
 
+    def plot_3d_biomass_fractions(df, ax1_col, ax2_col, ax1_label, ax2_label):
+        from mpl_toolkits.mplot3d import Axes3D
+        
+        bio_cols = [c for c in df.columns if c.startswith('Bio_Core_')]
+        total_bio = df[bio_cols].sum(axis=1).replace(0, np.nan)
+        
+        frac_cols = []
+        for col in bio_cols:
+            fname = f'Frac_{col.split("_")[2]}'
+            df[fname] = df[col] / total_bio
+            frac_cols.append(fname)
+            
+        # Get the top 4 bugs by mean fraction across the entire sweep
+        top_4 = df[frac_cols].mean().nlargest(4).index
+        
+        fig = plt.figure(figsize=(14, 10))
+        for i, bug in enumerate(top_4, 1):
+            ax = fig.add_subplot(2, 2, i, projection='3d')
+            pivot = df.pivot_table(index=ax2_col, columns=ax1_col, values=bug)
+            X, Y = np.meshgrid(pivot.columns, pivot.index)
+            
+            surf = ax.plot_surface(X, Y, pivot.values, cmap='viridis', alpha=0.9, edgecolor='k', linewidth=0.2)
+            ax.set_xlabel(ax1_label, labelpad=10)
+            ax.set_ylabel(ax2_label, labelpad=10)
+            ax.set_zlabel('Biomass Fraction', labelpad=10)
+            ax.set_title(f'{bug.replace("Frac_", "")} Dominance Surface', fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig('outputs/Plot_3D_Fractions.png', dpi=300)
+        plt.close()
+
     unique_ax1 = np.sort(df[ax1_col].dropna().unique())
     unique_ax2 = np.sort(df[ax2_col].dropna().unique())
     median_ax1 = unique_ax1[len(unique_ax1) // 2]
@@ -395,12 +469,12 @@ def generate_all_plots(csv_filename):
         f'(fraction of core cells with O₂ < 0.3 mmol m⁻³)',
         'Fraction', 'Plot3_Anoxic_Core.png', 'inferno')
 
-    # ── Plot 4: Total core biomass ────────────────────────────────────────────
+    # ── Plot 4: Biomass growth factor (relative to initial seed) ─────────────
     plot_contour(
-        'Total_Bio_Core_mmol',
-        f'Plot 4: Total Microbial Biomass Inside Particle Core\n'
-        f'(mmol C; all functional groups integrated)',
-        'mmol C', 'Plot4_Total_Bio_Core.png', 'cividis')
+        'Bio_Growth_Factor',
+        f'Plot 4: Core Biomass Growth Factor (Terminal ÷ Initial)\n'
+        f'(all functional groups combined; 1.0 = no net growth)',
+        'Growth factor (×)', 'Plot4_Bio_Growth_Factor.png', 'cividis')
 
     # ── Plot 5: Biomass fractions vs axis 2 (at median axis 1) ───────────────
     df_p5 = df[df[ax1_col] == median_ax1].copy()
@@ -468,9 +542,23 @@ def generate_all_plots(csv_filename):
     plt.title('Plot 7: Dominant Core Functional Group Regime Map\n'
               '(argmax of terminal-state biomass per functional group, particle mask only)',
               fontweight='bold')
+
+    # ── Overlay: anoxia-onset boundary (Frac_Anoxic_Core = 0 crossing) ────────
+    # Same X7/Y7 grid, so this lines up cell-for-cell with the regime map above.
+    pivot7_anoxic = df.pivot_table(index=ax2_col, columns=ax1_col,
+                                    values='Frac_Anoxic_Core', dropna=False)
+    Z7_anoxic = pivot7_anoxic.values
+    min_z7, max_z7 = np.nanmin(Z7_anoxic), np.nanmax(Z7_anoxic)
+    if min_z7 <= 0.0 < max_z7:
+        eps7 = max_z7 * 1e-5
+        cl7 = plt.contour(X7, Y7, Z7_anoxic, levels=[eps7],
+                          colors='cyan', linewidths=2.5, linestyles='dashed')
+        plt.clabel(cl7, inline=True, fontsize=10, fmt='Anoxia onset')
+
     plt.tight_layout()
     plt.savefig('outputs/Plot7_Dominant_Bug_Regime.png', dpi=300)
     plt.close()
+
 
     # ── Plot 8: N₂ net production rate ────────────────────────────────────────
     plot_contour(
@@ -478,6 +566,20 @@ def generate_all_plots(csv_filename):
         f'Plot 8: Terminal Net N₂ SMS Rate — Full Domain\n'
         f'(mmol N₂ s⁻¹; proxy for completed denitrification)',
         'mmol N₂ s⁻¹', 'Plot8_N2_Domain_Rate.png', 'plasma')
+
+
+    # ── Plot 9: 3D Biomass Fractions ──────────────────────────────────────────
+    plot_3d_biomass_fractions(df, ax1_col, ax2_col, ax1_label, ax2_label)
+
+    # ── Plot 10: Aerobic specific growth rate ──────────────────────────────────
+    # Core-mean μ_aer (day⁻¹). Flat/saturated across the O2 axis means growth
+    # isn't O2-limited over your swept range (aer_k_oxi = 0.2 is small next to
+    # typical O2 sweep values) — a real gradient here means O2 is the limiter.
+    plot_contour(
+        'GrowthRate_aer_perday',
+        f'Plot 10: Aerobic Heterotroph Specific Growth Rate\n'
+        f'(core-mean μ, day⁻¹; flat = O2-saturated over this range)',
+        'μ (day⁻¹)', 'Plot10_Aerobic_Growth_Rate.png', 'plasma')
 
     print('✅ All plots generated successfully!')
 
@@ -517,7 +619,7 @@ def main():
 
     os.makedirs('outputs', exist_ok=True)
     results_data = []
-    run_configs  = [(a1, a2) for a1 in ax1_vals for a2 in ax2_vals]
+    run_configs  = [(a1, a2) for a2 in ax2_vals for a1 in ax1_vals]
     _suite_t0    = _time.perf_counter()
 
     with progress(total=n_total, desc='Overall sweep', unit='run') as pbar:

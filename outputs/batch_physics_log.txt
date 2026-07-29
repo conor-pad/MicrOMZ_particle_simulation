@@ -1,0 +1,144 @@
+Radius: 0.50 mm
+  dx:         6.7568e-02 m
+  dy:         6.7568e-02 m
+  U_bg:       1.0853 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.50 mm
+  dx:         6.7568e-02 m
+  dy:         6.7568e-02 m
+  U_bg:       1.0853 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.50 mm
+  dx:         6.7568e-02 m
+  dy:         6.7568e-02 m
+  U_bg:       1.0853 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.54 mm
+  dx:         7.2765e-02 m
+  dy:         7.2765e-02 m
+  U_bg:       1.1313 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.58 mm
+  dx:         7.7963e-02 m
+  dy:         7.7963e-02 m
+  U_bg:       1.1758 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.62 mm
+  dx:         8.3160e-02 m
+  dy:         8.3160e-02 m
+  U_bg:       1.2191 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.65 mm
+  dx:         8.8358e-02 m
+  dy:         8.8358e-02 m
+  U_bg:       1.2612 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.69 mm
+  dx:         9.3555e-02 m
+  dy:         9.3555e-02 m
+  U_bg:       1.3022 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.73 mm
+  dx:         9.8753e-02 m
+  dy:         9.8753e-02 m
+  U_bg:       1.3423 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.77 mm
+  dx:         1.0395e-01 m
+  dy:         1.0395e-01 m
+  U_bg:       1.3814 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.81 mm
+  dx:         1.0915e-01 m
+  dy:         1.0915e-01 m
+  U_bg:       1.4196 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.85 mm
+  dx:         1.1435e-01 m
+  dy:         1.1435e-01 m
+  U_bg:       1.4571 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.88 mm
+  dx:         1.1954e-01 m
+  dy:         1.1954e-01 m
+  U_bg:       1.4938 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.92 mm
+  dx:         1.2474e-01 m
+  dy:         1.2474e-01 m
+  U_bg:       1.5299 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 0.96 mm
+  dx:         1.2994e-01 m
+  dy:         1.2994e-01 m
+  U_bg:       1.5652 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------
+Radius: 1.00 mm
+  dx:         1.3514e-01 m
+  dy:         1.3514e-01 m
+  U_bg:       1.6000 m/s
+  Total_Time: 650.0 s
+  K:          1.5758e-03 m²/s
+  VMAX_MULT:  300.0×  (aer_vmax_oxi eff=6.9444e-03/s)
+  Init_Aer:   8.00 mmol C m⁻³
+------------------------------

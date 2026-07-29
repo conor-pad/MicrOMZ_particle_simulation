@@ -35,7 +35,8 @@ Ly = 9 * radius
 # Nx, Ny = int(351), int(307)
 # Nx, Ny = int(151), int(151)  # Reduced grid for faster testing
 # Nx, Ny = int(151), int(151)  
-Nx, Ny = int(101), int(101)  
+# Nx, Ny = int(101), int(101)  
+Nx, Ny = int(71), int(7)  # Reduced grid for faster testing
 
 dx = Lx / (Nx - 1)
 dy = Ly / (Ny - 1)
@@ -58,7 +59,8 @@ K         = nu / Sc_target                # Scalar diffusivity (mm² s⁻¹)
 Sh        = 1 + 0.619 * Re_actual ** 0.412 * Sc_target ** (1.0 / 3.0)
 
 
-Total_Time = 1204.0
+# Total_Time = 3600.0
+Total_Time = 1800
 # Total_Time = //.0
 
 print(f"\n── Simulation Physics ──")

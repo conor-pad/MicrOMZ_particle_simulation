@@ -59,8 +59,8 @@ K         = nu / Sc_target                # Scalar diffusivity (mm² s⁻¹)
 Sh        = 1 + 0.619 * Re_actual ** 0.412 * Sc_target ** (1.0 / 3.0)
 
 
-# Total_Time = 3600.0
-Total_Time = 1800
+Total_Time = 3600.0
+# Total_Time = 1800
 # Total_Time = //.0
 
 print(f"\n── Simulation Physics ──")

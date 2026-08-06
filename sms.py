@@ -3,16 +3,15 @@ import torch
 
 def microbial_sms_omz(var_dict, bgc):
     """
-    Compute biological sources and sinks for the MicrOMZ ecosystem.
-    Executes in pure PyTorch (uncompiled) to bypass hardware buffer limits.
+    biological sources and sinks for MicrOMZ 
     """
-    # ── 1. Clamp inputs to prevent negative concentrations ──
+    # prevent negative concentrations
     c = {k: torch.clamp(v, min=0.0) for k, v in var_dict.items()}
 
     def monod(S, K): return S / (S + K)
     def mort(B): return B * (bgc.m_l + B * bgc.m_q)
 
-    # ── 2. Gross Growth Rates (Liebig's Law of the Minimum) ──
+    # Growth Rates
     aer_bio = torch.minimum((bgc.aer_vmax_red * monod(c['doc'], bgc.aer_k_red)) / bgc.aer_y_red, (bgc.aer_vmax_oxi * monod(c['o2'], bgc.aer_k_oxi)) / bgc.aer_y_oxi) * c['aer']
     nar_bio = torch.minimum((bgc.nar_vmax_red * monod(c['doc'], bgc.nar_k_red)) / bgc.nar_y_red, (bgc.nar_vmax_oxi * monod(c['no3'], bgc.nar_k_oxi)) / bgc.nar_y_oxi) * c['nar']
     nai_bio = torch.minimum((bgc.nai_vmax_red * monod(c['doc'], bgc.nai_k_red)) / bgc.nai_y_red, (bgc.nai_vmax_oxi * monod(c['no3'], bgc.nai_k_oxi)) / bgc.nai_y_oxi) * c['nai']
@@ -24,7 +23,8 @@ def microbial_sms_omz(var_dict, bgc):
     nob_bio = torch.minimum((bgc.nob_vmax_red * monod(c['no2'], bgc.nob_k_red)) / bgc.nob_y_red, (bgc.nob_vmax_oxi * monod(c['o2'], bgc.nob_k_oxi)) / bgc.nob_y_oxi) * c['nob']
     aox_bio = torch.minimum((bgc.aox_vmax_red * monod(c['nh4'], bgc.aox_k_red)) / bgc.aox_y_red, (bgc.aox_vmax_oxi * monod(c['no2'], bgc.aox_k_oxi)) / bgc.aox_y_oxi) * c['aox']
 
-    # ── 3. Zooplankton Grazing ──
+    # grazing
+    # c refers to the line at the top to prevent negative concentrations
     total_prey = c['aer'] + c['nar'] + c['nai'] + c['nao'] + c['nir'] + c['nio'] + c['nos'] + c['aoa'] + c['nob'] + c['aox']
     z_o2lim = torch.exp(-c['o2'] / bgc.zoo_o2lim)
     grazing_rate = (bgc.zoo_umax * (1.0 - z_o2lim)) * c['zoo'] * (1.0 / (total_prey + bgc.zoo_k_b))
@@ -40,7 +40,7 @@ def microbial_sms_omz(var_dict, bgc):
     zoo_bio = grazeC_total * bgc.zoo_g_z
     zoo_excretion_C = grazeC_total * (1.0 - bgc.zoo_g_z)
     
-    # ── 4. Mortality & Nitrogen Recycling ──
+    # mortality & nitrogen recycling
     lossC_total = (mort(c['aer']) + mort(c['nar']) + mort(c['nai']) + mort(c['nao']) + mort(c['nir']) + 
                    mort(c['nio']) + mort(c['nos']) + mort(c['aoa']) + mort(c['nob']) + mort(c['aox']) + 
                    c['zoo'] * (bgc.zoo_m_l + c['zoo'] * bgc.zoo_m_q))
@@ -51,7 +51,7 @@ def microbial_sms_omz(var_dict, bgc):
 
     grazeN_to_NH4 = torch.clamp((grazeC_total / bgc.CN_bio) - (zoo_bio / bgc.CN_det), min=0.0)
 
-    # ── 5. Chemical Sources and Sinks ──
+    # chemical sms
     ddt = {}
 
     ddt['doc'] = -(aer_bio * bgc.aer_y_red + nar_bio * bgc.nar_y_red + nai_bio * bgc.nai_y_red + 
@@ -74,7 +74,7 @@ def microbial_sms_omz(var_dict, bgc):
 
     ddt['n2']  = (nao_bio * bgc.nao_e_n2 + nio_bio * bgc.nio_e_n2 + aox_bio * bgc.aox_e_n2 + nos_bio * bgc.nos_e_n2)
 
-    # ── 6. Biological Sources and Sinks ──
+    # Biological sms
     ddt['aer'] = aer_bio - mort(c['aer']) - graze['aer']
     ddt['nar'] = nar_bio - mort(c['nar']) - graze['nar']
     ddt['nai'] = nai_bio - mort(c['nai']) - graze['nai']
@@ -93,10 +93,10 @@ def microbial_sms_omz(var_dict, bgc):
         'aoa': aoa_bio, 'nob': nob_bio, 'aox': aox_bio, 'zoo': zoo_bio
     }
 
-    # Required Placeholders
+    # placeholders to make it more similar to nitromz
     ref = c['o2']
     ddt['po4']       = torch.zeros_like(ref)
-    ddt['poc']       = torch.zeros_like(ref)  # hydrolysis sink applied externally in physics.py
+    ddt['poc']       = torch.zeros_like(ref)  # hydrolysis sink applied in physics.py
     ddt['n2o_ammox'] = torch.zeros_like(ref)
     ddt['n2o_denit'] = (nir_bio * bgc.nir_e_n2o + nai_bio * bgc.nai_e_n2o) - (nos_bio * bgc.nos_y_oxi)
 

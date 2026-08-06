@@ -62,7 +62,10 @@ def setup_physics(cfg):
 
     # ── Drag mask & particle mask ─────────────────────────────────────────────
     t_adv_cell = np.minimum(dx_b, dy_b) / U_bg_b
+    # max_alpha   = 30.0 / t_adv_cell
+    # To increase internal flow:
     max_alpha   = 30.0 / t_adv_cell
+    
     cfg.drag_max = max_alpha
 
     particle_idx     = (X - cx_b) ** 2 + (Y - cy_b) ** 2 <= radius_b ** 2
@@ -275,6 +278,8 @@ def apply_implicit_visc(w_in, helm_denom, state):
 
 
 # ── RHS ───────────────────────────────────────────────────────────────────────
+
+
 
 def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
     """

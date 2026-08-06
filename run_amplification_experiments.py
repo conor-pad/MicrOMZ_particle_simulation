@@ -12,7 +12,7 @@ from bcs import apply_bcs, enforce_symmetry, inflow
 from biopar import BioPar
 
 # ── 1. Sweep Configuration ──────────────────────────────────────────────────
-BATCH_SIZE = 5
+BATCH_SIZE = 10
 
 # Force settings to prevent DOC limitation and set temporal/batch configs
 cfg.batch_size = BATCH_SIZE                  

@@ -1,7 +1,7 @@
 # config.py
 use_symmetry = True   # Artificial symmetry enforcement to keep the model stable.
 batch_size   = 1      # Default for main.py (overridden by run_suite.py)
-snapshot_time = 1.0   # Seconds between saved snapshots
+snapshot_time = 30.0   # Seconds between saved snapshots
 
 # ── Suite / loop control flags ────────────────────────────────────────────────
 is_suite                 = False
@@ -35,8 +35,8 @@ Ly = 9 * radius
 # Nx, Ny = int(351), int(307)
 # Nx, Ny = int(151), int(151)  # Reduced grid for faster testing
 # Nx, Ny = int(151), int(151)  
-# Nx, Ny = int(101), int(101)  
-Nx, Ny = int(71), int(7)  # Reduced grid for faster testing
+# Nx, Ny = int(91), int(91)  
+Nx, Ny = int(75), int(75)  # Reduced grid for faster testing
 
 dx = Lx / (Nx - 1)
 dy = Ly / (Ny - 1)
@@ -49,8 +49,8 @@ Sc_target = 660
 
 # ── Derived Physics Parameters ────────────────────────────────────────────────
 nu   = 1.04                               # Kinematic viscosity of seawater (mm² s⁻¹)
-# U_bg = 2.2 * (radius / 1.0) ** 0.56      # Sinking speed (Omand 2020 fractal scaling)
-U_bg = 1.6 * (radius / 1.0) ** 0.56      # Sinking speed (Omand 2020 fractal scaling)
+U_bg = 2.2 * (radius / 1.0) ** 0.56      # Sinking speed (Omand 2020 fractal scaling)
+# U_bg = 1.6 * (radius / 1.0) ** 0.56      # Sinking speed (Omand 2020 fractal scaling)
 
 
 Re_actual = (U_bg * 2.0 * radius) / nu
@@ -59,9 +59,9 @@ K         = nu / Sc_target                # Scalar diffusivity (mm² s⁻¹)
 Sh        = 1 + 0.619 * Re_actual ** 0.412 * Sc_target ** (1.0 / 3.0)
 
 
-Total_Time = 3600.0
+Total_Time = 30000.0
 # Total_Time = 1800
-# Total_Time = //.0
+
 
 print(f"\n── Simulation Physics ──")
 print(f"Radius   | R: {radius}")
@@ -71,4 +71,6 @@ print(f"Time     | Total_Time: {Total_Time:.2f} s")
 print(f"────────────────────────\n")
 
 # ── Time Stepping ─────────────────────────────────────────────────────────────
-target_CFL = 0.2
+# target_CFL = 0.2
+target_CFL = 0.4
+# target_CFL = 0.5

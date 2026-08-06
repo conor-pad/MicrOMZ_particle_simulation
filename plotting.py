@@ -650,3 +650,89 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     plt.savefig(filename_gr, dpi=300)
     plt.close(fig_gr)
     print(f"Saved {filename_gr}!")
+
+
+     # ── TRACER TIME SERIES AT MULTIPLE POINTS (STEADY-STATE CHECK) ───────────
+    # Three sample points along the centerline, same y (cfg.cy):
+    #   - Core:     particle center — should be the fastest to settle
+    #   - Upstream: halfway between the left domain edge and the particle —
+    #               ambient-facing, less perturbed
+    #   - Downstream: halfway between the particle and the right domain edge —
+    #               sits in the wake, likely the LAST point to settle since
+    #               it's fed by whatever's still developing upstream of it
+    iy_c = int(round(cfg.cy / cfg.dy))
+
+    ix_core       = int(round(cfg.cx / cfg.dx))
+    ix_upstream   = int(round((cfg.cx / 2.0) / cfg.dx))
+    ix_downstream = int(round((cfg.cx + (cfg.Lx - cfg.cx) / 2.0) / cfg.dx))
+
+    sample_points = {
+        'Core (particle center)': ix_core,
+        'Upstream (halfway to left edge)': ix_upstream,
+        'Downstream (halfway to right edge)': ix_downstream,
+    }
+    sample_colors = {
+        'Core (particle center)': '#1f78b4',
+        'Upstream (halfway to left edge)': '#33a02c',
+        'Downstream (halfway to right edge)': '#e31a1c',
+    }
+
+    tracer_snapshot_map = {
+        'O2':  c_snapshots,
+        'NO3': no3_snapshots,
+        'NO2': no2_snapshots,
+        'N2O': n2o_snapshots,
+        'N2':  n2_snapshots,
+        'DOC': doc_snapshots,
+        'NH4': nh4_snapshots,
+    }
+
+    fig_ss, axes_ss = plt.subplots(4, 2, figsize=(14, 14), sharex=True)
+    axes_ss_flat = axes_ss.flatten()
+    axes_ss_flat[-1].set_visible(False)  # 7 tracers, 8th slot unused
+
+    for ax_s, (tname, snaps) in zip(axes_ss_flat, tracer_snapshot_map.items()):
+        for label, ix in sample_points.items():
+            series = [snaps[fi][ix, iy_c] for fi in range(n_frames)]
+            ax_s.plot(snapshot_times, series, lw=2, color=sample_colors[label], label=label)
+        ax_s.set_title(tname, fontweight='bold')
+        ax_s.set_ylabel('Concentration (mmol/m³)')
+        ax_s.grid(alpha=0.3)
+
+    axes_ss_flat[0].legend(loc='best', fontsize=8)
+
+    for ax_s in axes_ss_flat[-3:-1]:
+        ax_s.set_xlabel('Time (s)')
+
+    fig_ss.suptitle(
+        f"Tracer Concentrations at 3 Points — Steady-State Check\n"
+        f"(y = {cfg.cy:.2f}; core x={cfg.cx:.2f}, upstream x={cfg.cx/2.0:.2f}, "
+        f"downstream x={cfg.cx + (cfg.Lx - cfg.cx)/2.0:.2f})",
+        fontweight='bold', fontsize=13)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    filename_ss = f"SteadyStateCheck_{base_filename}.png"
+    plt.savefig(filename_ss, dpi=300)
+    plt.close(fig_ss)
+    print(f"Saved {filename_ss}!")
+
+    # ── EXACT BIOMASS OVER TIME (STATIC PLOT) ────────────────────────────
+    fig_bio_ts, ax_bio_ts = plt.subplots(figsize=(10, 6))
+    fig_bio_ts.patch.set_facecolor('#1a1a2e')
+    ax_bio_ts.set_facecolor('#16213e')
+
+    for bi, bname in enumerate(BIO_NAMES):
+        ax_bio_ts.plot(snapshot_times, mean_core[:, bi], color=BIO_COLORS[bi], lw=2, label=BIO_LABELS[bi])
+
+    ax_bio_ts.set_title("Mean Core Biomass Over Time", color='white', fontweight='bold')
+    ax_bio_ts.set_xlabel("Time (s)", color='white')
+    ax_bio_ts.set_ylabel("Biomass (mmol C m⁻³)", color='white')
+    ax_bio_ts.tick_params(colors='white')
+    for spine in ax_bio_ts.spines.values(): spine.set_edgecolor('#444466')
+    ax_bio_ts.legend(loc='upper right', fontsize=8, facecolor='#1a1a2e', edgecolor='#444466', labelcolor='white', ncol=2)
+
+    filename_bio_ts = f"BiomassTimeSeries_{base_filename}.png"
+    plt.tight_layout()
+    plt.savefig(filename_bio_ts, dpi=300)
+    plt.close(fig_bio_ts)
+    print(f"Saved {filename_bio_ts}!")

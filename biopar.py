@@ -8,7 +8,7 @@ class BioPar:
     Biogeochemical parameters based on nit_biopar_omz.m
     Includes dynamic stoichiometry from get_stoichiometry.m
     """
-    
+    rate_amplifier: float = 50.0  # Dimensionless multiplier on all rates 
     # ── Organic Matter Composition (Anderson & Sarmiento 1994) ──
     stoch_a: float = 106.0  # C
     stoch_b: float = 175.0  # H
@@ -85,16 +85,16 @@ class BioPar:
     # DOC_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
     # k_hyd_max must comfortably exceed the community's summed max carbon
     # demand (Σ Vmax_red / Y_red) so hydrolysis never starves the heterotrophs.
-    k_hyd_max: float = 1 # e-3    # Max hydrolysis rate per unit heterotroph biomass (1/s per mmol C m⁻³)
-    K_POC: float = 1e4         # Half-saturation constant for solid POC (mmol C m⁻³)
+    k_hyd_max: float = 1e-2    # Max hydrolysis rate per unit heterotroph biomass (1/s per mmol C m⁻³)
+    K_POC: float = 1e3         # Half-saturation constant for solid POC (mmol C m⁻³)
 
 
     # HIGHER K VALUES MEAN THE MICROBES ARE LESS EFFICIENT AT LOW FOOD CONCENTRATIONS.  LOWER K VALUES MEAN THEY ARE MORE EFFICIENT AT LOW FOOD CONCENTRATIONS.
 
     # ── MICROBIAL PARAMS  ──
     # aer (aerobic heterotroph)
-    aer_vmax_oxi: float = 2.3148e-05
-    aer_vmax_red: float = 2.4769e-05 
+    aer_vmax_oxi: float = 2.3148e-05 * rate_amplifier
+    aer_vmax_red: float = 2.4769e-05 * rate_amplifier
     aer_k_oxi: float = 0.2
     aer_k_red: float = 10 # 20.0? 10 is original
     aer_y_oxi: float = 4.00 # amount of oxidant (o2) needed to grow 1 unit of biomass ; number depends on free energy gain from each oxidant molecule
@@ -102,8 +102,8 @@ class BioPar:
     aer_e_nh4: float = 0.39
 
     # nar (no3 to no2 heterotroph)
-    nar_vmax_oxi: float = 2.3148e-05 
-    nar_vmax_red: float = 2.4769e-05  
+    nar_vmax_oxi: float = 2.3148e-05 * rate_amplifier
+    nar_vmax_red: float = 2.4769e-05  * rate_amplifier
     nar_k_oxi: float = 1.0
     nar_k_red: float = 20.0
     nar_y_oxi: float = 12.05 # amount of oxidant (no3) needed to grow 1 unit of biomass
@@ -112,8 +112,8 @@ class BioPar:
     nar_e_nh4: float = 0.62
 
     # nai (no3 to n2o heterotroph)
-    nai_vmax_oxi: float = 2.3148e-05  
-    nai_vmax_red: float = 2.4769e-05  
+    nai_vmax_oxi: float = 2.3148e-05 * rate_amplifier
+    nai_vmax_red: float = 2.4769e-05 * rate_amplifier
     nai_k_oxi: float = 1.0
     nai_k_red: float = 20.0
     nai_y_oxi: float = 6.22 # this can be thought of as the "cost" in DOC it takes to grow 1 unit of biomass
@@ -122,8 +122,8 @@ class BioPar:
     nai_e_nh4: float = 0.65
 
     # nao (no3 to n2 heterotroph)
-    nao_vmax_oxi: float = 2.3148e-05  
-    nao_vmax_red: float = 2.4769e-05  
+    nao_vmax_oxi: float = 2.3148e-05 * rate_amplifier
+    nao_vmax_red: float = 2.4769e-05 * rate_amplifier
     nao_k_oxi: float = 1.0
     nao_k_red: float = 20.0
     nao_y_oxi: float = 5.50
@@ -132,8 +132,8 @@ class BioPar:
     nao_e_nh4: float = 0.72
 
     # nir (no2 to n2o heterotroph)
-    nir_vmax_oxi: float = 2.3148e-05  
-    nir_vmax_red: float = 2.4769e-05  
+    nir_vmax_oxi: float = 2.3148e-05 * rate_amplifier  
+    nir_vmax_red: float = 2.4769e-05 * rate_amplifier  
     nir_k_oxi: float = 1.0
     nir_k_red: float = 20.0
     nir_y_oxi: float = 8.75
@@ -142,8 +142,8 @@ class BioPar:
     nir_e_nh4: float = 0.43
 
     # nio (no2 to n2 heterotroph)
-    nio_vmax_oxi: float = 2.3148e-05  
-    nio_vmax_red: float = 2.4769e-05  
+    nio_vmax_oxi: float = 2.3148e-05 * rate_amplifier  
+    nio_vmax_red: float = 2.4769e-05 * rate_amplifier  
     nio_k_oxi: float = 1.0
     nio_k_red: float = 20.0
     nio_y_oxi: float = 6.07
@@ -152,8 +152,8 @@ class BioPar:
     nio_e_nh4: float = 0.45
 
     # nos (n2o to n2 heterotroph)
-    nos_vmax_oxi: float = 2.3148e-05  
-    nos_vmax_red: float = 2.4769e-05  
+    nos_vmax_oxi: float = 2.3148e-05 * rate_amplifier  
+    nos_vmax_red: float = 2.4769e-05 * rate_amplifier  
     nos_k_oxi: float = 0.4
     nos_k_red: float = 20.0
     nos_y_oxi: float = 5.54
@@ -162,8 +162,8 @@ class BioPar:
     nos_e_nh4: float = 0.24
 
     # aoa (nh4 to no2 chemoautotroph)
-    aoa_vmax_oxi: float = 1.2668e-04  
-    aoa_vmax_red: float = 9.4482e-05  
+    aoa_vmax_oxi: float = 1.2668e-04 * rate_amplifier  
+    aoa_vmax_red: float = 9.4482e-05 * rate_amplifier  
     aoa_k_oxi: float = 0.333
     aoa_k_red: float = 0.134
     aoa_y_oxi: float = 8.16
@@ -171,8 +171,8 @@ class BioPar:
     aoa_e_no2: float = 7.96
 
     # nob (no2 to no3 chemoautotroph)
-    nob_vmax_oxi: float = 1.2043e-04  
-    nob_vmax_red: float = 2.7557e-04  
+    nob_vmax_oxi: float = 1.2043e-04 * rate_amplifier  
+    nob_vmax_red: float = 2.7557e-04 * rate_amplifier  
     nob_k_oxi: float = 0.778
     nob_k_red: float = 0.254
     nob_y_oxi: float = 6.94
@@ -180,8 +180,8 @@ class BioPar:
     nob_e_no3: float = 15.87
 
     # aox (anammox)
-    aox_vmax_oxi: float = 5.1244e-05  
-    aox_vmax_red: float = 4.3287e-05  
+    aox_vmax_oxi: float = 5.1244e-05 * rate_amplifier  
+    aox_vmax_red: float = 4.3287e-05 * rate_amplifier  
     aox_k_oxi: float = 0.45
     aox_k_red: float = 0.45
     aox_y_oxi: float = 17.71

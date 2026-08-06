@@ -9,7 +9,7 @@ class InflowBCs:
     Boundary and initial conditions for biological variables.
     Values represent concentrations in mmol/m3
     """
-    o2:  float = 11
+    o2:  float = 10#11
     no3: float = 10.0
     doc: float = 0 # 40
 
@@ -26,15 +26,15 @@ class InflowBCs:
     # Microbial Functional Types (mmol C m⁻³)
     # These are initial conditions only
     aer: float = 4
-    nar: float = 1
-    nai: float = 1
-    nao: float = 1
-    nir: float = 1
-    nio: float = 1
-    nos: float = 1
-    aoa: float = 1 # late arrival chemotroph
-    nob: float = 1 # late arrival chemotroph
-    aox: float = 1 # late arrival chemotroph
+    nar: float = 4
+    nai: float = 4
+    nao: float = 4
+    nir: float = 4
+    nio: float = 4
+    nos: float = 4
+    aoa: float = 2 # late arrival chemotroph
+    nob: float = 2 # late arrival chemotroph
+    aox: float = 2 # late arrival chemotroph
     zoo: float = 0
 
 inflow = InflowBCs()

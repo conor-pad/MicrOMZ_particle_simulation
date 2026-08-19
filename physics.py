@@ -62,8 +62,6 @@ def setup_physics(cfg):
 
     # ── Drag mask & particle mask ─────────────────────────────────────────────
     t_adv_cell = np.minimum(dx_b, dy_b) / U_bg_b
-    # max_alpha   = 30.0 / t_adv_cell
-    # To increase internal flow:
     max_alpha   = 30.0 / t_adv_cell
     
     cfg.drag_max = max_alpha
@@ -82,7 +80,6 @@ def setup_physics(cfg):
     da_dy_np = np.gradient(drag_mask_np, axis=2) / dy_b
 
     # ── Timestep ──────────────────────────────────────────────────────────────
-    # Drag and viscosity are IMPLICIT → only advection and scalar diffusion limit dt.
     dt_adv  = np.min(cfg.target_CFL * np.minimum(dx_b, dy_b) / U_bg_b)
     dt_diff = np.min(0.25 * np.minimum(dx_b, dy_b) ** 2 / cfg.K)
     dt_drag = np.min(0.5 / max_alpha)
@@ -103,11 +100,6 @@ def setup_physics(cfg):
     bio_names = [
         'aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo'
     ]
-    # 'poc' is solid particulate carbon bound to the sinking aggregate — like the
-    # bio tracers it must NOT advect or diffuse. It isn't part of bio_names because
-    # loop.py's growth-rate snapshotting indexes sms.py's gross_growth dict by
-    # bio_names, which has no 'poc' entry. It gets its own no-transport RHS branch
-    # in get_rhs_batched() below (hydrolysis sink only).
     tracer_names = chem_names + bio_names + ['poc']
 
     # ── State dict ────────────────────────────────────────────────────────────
@@ -122,9 +114,17 @@ def setup_physics(cfg):
     state['inv_2dx']      = torch.tensor(1.0 / (2.0 * dx_b),   dtype=torch.float32, device=device)
     state['inv_2dy']      = torch.tensor(1.0 / (2.0 * dy_b),   dtype=torch.float32, device=device)
     state['inv_4dxdy']    = torch.tensor(1.0 / (4.0 * dx_b * dy_b), dtype=torch.float32, device=device)
+
+    # ── Isotropic 9-point Laplacian coefficient ────────────────────────────────
+    # ∇²f ≈ [4(f_E+f_W+f_N+f_S) + (f_NE+f_NW+f_SE+f_SW) - 20 f_C] / (6h²)
+    # This weighting only cancels the leading grid-orientation error term when
+    # cells are square (dx == dy) — true here since Nx==Ny and Lx==Ly, but
+    # asserted explicitly so this breaks loudly rather than silently if that
+    # ever changes.
+    assert np.all(np.abs(dx_b - dy_b) < 1e-12 * np.maximum(dx_b, dy_b)), \
+        "Isotropic 9-point Laplacian assumes dx == dy (square cells); got dx=%s, dy=%s" % (dx_b.ravel(), dy_b.ravel())
+    state['inv_h2_iso'] = torch.tensor(1.0 / (6.0 * dx_b ** 2), dtype=torch.float32, device=device)
     state['bio_accel']    = float(getattr(cfg, 'BIO_ACCEL', 100_000.0))
-    # Per-batch-member mortality amplifier — [bs,1,1], not a scalar, so
-    # poc_mort/radius_mort sweeps apply each member's own MORT_AMP value.
     state['mort_amp']     = torch.tensor(b_arr(getattr(cfg, 'MORT_AMP', 1.0)),
                                           dtype=torch.float32, device=device)
 
@@ -134,11 +134,10 @@ def setup_physics(cfg):
     state['tracer_names'] = tracer_names
 
     # ── POC hydrolysis ────────────────────────────────────────────────────────
-    # Alldredge (1998) fractal scaling, or Klawonn density override.
-    V_mm3    = np.pi * (radius_b ** 2) * 1.0          # cylinder: πr²×1mm depth
-    poc_ug   = 0.99 * (V_mm3 ** 0.52)                 # Alldredge fractal mass (µg C)
-    poc_mmol_alldredge = poc_ug / 12_010               # µg → mmol C (12010 µg/mmol)
-    poc_density_alldredge = poc_mmol_alldredge / (V_mm3 * 1e-9)  # mmol C m⁻³
+    V_mm3    = np.pi * (radius_b ** 2) * 1.0          
+    poc_ug   = 0.99 * (V_mm3 ** 0.52)                 
+    poc_mmol_alldredge = poc_ug / 12_010               
+    poc_density_alldredge = poc_mmol_alldredge / (V_mm3 * 1e-9)  
 
     if getattr(cfg, 'use_klawonn_density', False) and hasattr(cfg, 'poc_initial_core'):
         poc_initial_density = (np.ones((bs, 1, 1), dtype=np.float32)
@@ -146,14 +145,8 @@ def setup_physics(cfg):
     else:
         poc_initial_density = poc_density_alldredge.astype(np.float32)
 
-
-    # THIS IS BEING ACCELERATED WITH BIO AMP BTW!!!!!!!!!
-    # k_hyd_max is scaled by BIO_ACCEL so DOC supply keeps pace with accelerated biology.
-    # Hydrolysis is now biomass-driven and saturating (computed every step in
-    # get_rhs_batched() using state['k_hyd_max'] and state['K_POC']):
-    #     doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
-    k_hyd_max_raw = float(state['bgc'].k_hyd_max)        # per unit biomass, s⁻¹, from biopar
-    k_hyd_max_eff = k_hyd_max_raw * state['bio_accel']   # accelerated
+    k_hyd_max_raw = float(state['bgc'].k_hyd_max)        
+    k_hyd_max_eff = k_hyd_max_raw * state['bio_accel']   
 
     state['k_hyd_max'] = torch.tensor(k_hyd_max_eff,          dtype=torch.float32, device=device)
     state['K_POC']     = torch.tensor(state['bgc'].K_POC,     dtype=torch.float32, device=device)
@@ -180,25 +173,20 @@ def setup_physics(cfg):
         init_val = getattr(inflow, name)
 
         if name == 'doc':
-            # DOC starts at zero everywhere — it is produced solely by POC hydrolysis.
             state['tracers'][name] = torch.zeros(
                 (bs, cfg.Nx, cfg.Ny), dtype=torch.float32, device=device)
 
         elif name == 'poc':
-            # POC starts confined to the particle at poc_initial_density —
-            # the solid carbon reservoir that hydrolysis draws down over time.
             arr = poc_initial_density * particle_mask_np
             state['tracers'][name] = torch.tensor(
                 arr.astype(np.float32), device=device)
 
         elif name in set(bio_names):
-            # Bugs initialised inside the particle using the value from bcs.inflow.
             arr = np.zeros((bs, cfg.Nx, cfg.Ny), dtype=np.float32)
             arr[particle_mask_np > 0] = float(init_val)
             state['tracers'][name] = torch.tensor(arr, device=device)
 
         else:
-            # Chemical tracers: uniform inflow value everywhere.
             init_arr = b_arr(init_val)
             init_t   = torch.tensor(init_arr, dtype=torch.float32, device=device)
             state['tracers'][name] = (
@@ -221,7 +209,7 @@ def setup_physics(cfg):
     dy_t  = torch.tensor(dy_b, dtype=torch.float32, device=device)
     lam_x = (2.0 / dx_t ** 2) * (torch.cos(np.pi * ii / (Ni + 1)) - 1.0).unsqueeze(1)
     lam_y = (2.0 / dy_t ** 2) * (torch.cos(np.pi * jj / (Nj + 1)) - 1.0).unsqueeze(0)
-    state['Lambda'] = lam_x + lam_y   # shape [bs, Ni, Nj] or [Ni, Nj], all ≤ 0
+    state['Lambda'] = lam_x + lam_y   
 
     state['_dst_buf_axis0'] = torch.zeros((bs, 2 * (Ni + 1), Nj),  dtype=torch.float32, device=device)
     state['_dst_buf_axis1'] = torch.zeros((bs, Ni, 2 * (Nj + 1)), dtype=torch.float32, device=device)
@@ -278,10 +266,43 @@ def apply_implicit_visc(w_in, helm_denom, state):
 
 
 # ── RHS ───────────────────────────────────────────────────────────────────────
+def get_rhs_bio_only(tracers_dict, state, cfg):
+    """Standalone biological RHS for fast-forwarding without physics."""
+    interior = {n: tracers_dict[n][..., 1:-1, 1:-1] for n in state['tracer_names']}
+    total_het = sum(interior[b] for b in ('aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos'))
+    
+    poc = interior['poc']
+    doc_flux = state['k_hyd_max'] * total_het * (poc / (state['K_POC'] + poc))
+    
+    bgc = state['bgc']
+    orig_m_l, orig_m_q = bgc.m_l, bgc.m_q
+    orig_zm_l, orig_zm_q = bgc.zoo_m_l, bgc.zoo_m_q
+    bgc.m_l = orig_m_l * state['mort_amp']
+    bgc.m_q = orig_m_q * state['mort_amp']
+    bgc.zoo_m_l = orig_zm_l * state['mort_amp']
+    bgc.zoo_m_q = orig_zm_q * state['mort_amp']
+    
+    ddt, gross_growth = microbial_sms_omz(interior, bgc)
+    
+    bgc.m_l, bgc.m_q = orig_m_l, orig_m_q
+    bgc.zoo_m_l, bgc.zoo_m_q = orig_zm_l, orig_zm_q
+    
+    bio_accel = state['bio_accel']
+    rhs = {}
+    for n in state['tracer_names']:
+        if n in state['chem_names']:
+            rhs[n] = ddt[n] * bio_accel
+            if n == 'doc':
+                rhs[n] = rhs[n] + doc_flux
+        elif n in state['bio_names']:
+            rhs[n] = ddt[n] * bio_accel
+        elif n == 'poc':
+            rhs[n] = -doc_flux
+            
+    return rhs, gross_growth
 
 
-
-def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
+def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg, compute_bio=True):    
     """
     Batched RHS for vorticity (Arakawa) and tracers.
 
@@ -324,6 +345,15 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
     f_n_list = [w_f[..., 1:-1, 2:  ]] + [tracers_dict[n][..., 1:-1, 2:  ] for n in chem_names]
     f_s_list = [w_f[..., 1:-1, :-2 ]] + [tracers_dict[n][..., 1:-1, :-2 ] for n in chem_names]
 
+    # Diagonal neighbors — needed for the isotropic 9-point Laplacian below.
+    # Vorticity's diagonals (w_ne/w_nw/w_se/w_sw) already get computed a few
+    # lines down for the Arakawa Jacobian; stacking them here alongside the
+    # tracer diagonals means that slicing is shared/reused, not duplicated.
+    f_ne_list = [w_f[..., 2:,  2:  ]] + [tracers_dict[n][..., 2:,  2:  ] for n in chem_names]
+    f_nw_list = [w_f[..., :-2, 2:  ]] + [tracers_dict[n][..., :-2, 2:  ] for n in chem_names]
+    f_se_list = [w_f[..., 2:,  :-2 ]] + [tracers_dict[n][..., 2:,  :-2 ] for n in chem_names]
+    f_sw_list = [w_f[..., :-2, :-2 ]] + [tracers_dict[n][..., :-2, :-2 ] for n in chem_names]
+
     w_ne = w_f[..., 2:,  2:  ]; w_sw = w_f[..., :-2, :-2]
     w_se = w_f[..., 2:,  :-2 ]; w_nw = w_f[..., :-2, 2:  ]
 
@@ -332,6 +362,10 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
     f_w = torch.stack(f_w_list)
     f_n = torch.stack(f_n_list)
     f_s = torch.stack(f_s_list)
+    f_ne = torch.stack(f_ne_list)
+    f_nw = torch.stack(f_nw_list)
+    f_se = torch.stack(f_se_list)
+    f_sw = torch.stack(f_sw_list)
 
     w_c, w_e, w_w, w_n, w_s = f_c[0], f_e[0], f_w[0], f_n[0], f_s[0]
 
@@ -343,8 +377,15 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
              - w_e  * dp_ne_se + w_w  * dp_nw_sw) * state['inv_4dxdy']
     J_avg   = (J_std + J_hat + J_tilde) / 3.0
 
-    lap = ((f_e + f_w - 2.0 * f_c) * state['inv_dx2'] +
-           (f_n + f_s - 2.0 * f_c) * state['inv_dy2'])
+    # ── Isotropic 9-point Laplacian ───────────────────────────────────────────
+    # ∇²f ≈ [4(N+S+E+W) + (NE+NW+SE+SW) - 20 f_C] / (6h²)
+    # Cancels the leading grid-orientation error term the plain 5-point
+    # stencil has, which is what was producing the boxy/diamond-shaped
+    # depletion pattern at the particle's diagonal "shoulders" (advection
+    # is separately still dimensionally split, so this only fixes the
+    # diffusion term's contribution to that anisotropy, not all of it).
+    lap = (4.0 * (f_e + f_w + f_n + f_s) + (f_ne + f_nw + f_se + f_sw)
+           - 20.0 * f_c) * state['inv_h2_iso']
 
     # ── 2. Local velocities ───────────────────────────────────────────────────
     u_c =  dp_ns * state['inv_2dy']
@@ -357,31 +398,24 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
     state['_rhs_buf_w'][..., 1:-1, 1:-1] = rhs_w
 
     # ── 4. SMS ────────────────────────────────────────────────────────────────
-    interior_tracers = {n: tracers_dict[n][..., 1:-1, 1:-1] for n in state['tracer_names']}
+    if compute_bio:
+        interior_tracers = {n: tracers_dict[n][..., 1:-1, 1:-1] for n in state['tracer_names']}
+        total_het_biomass = sum(interior_tracers[b] for b in ('aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos'))
+        poc_interior = interior_tracers['poc']
+        doc_flux = state['k_hyd_max'] * total_het_biomass * (poc_interior / (state['K_POC'] + poc_interior))
 
-    # ── POC → DOC hydrolysis (biomass-driven, saturating) ─────────────────────
-    # doc_flux = k_hyd_max * total_heterotroph_biomass * POC / (K_POC + POC)
-    # Only the DOC-consuming heterotrophs (not the chemoautotrophs aoa/nob/aox)
-    # drive hydrolysis. k_hyd_max is already pre-scaled by bio_accel.
-    total_het_biomass = sum(interior_tracers[b] for b in
-                             ('aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos'))
-    poc_interior = interior_tracers['poc']
-    doc_flux = (state['k_hyd_max'] * total_het_biomass *
-                (poc_interior / (state['K_POC'] + poc_interior)))
-
-    bgc = state['bgc']
-    orig_m_l,  orig_m_q  = bgc.m_l,     bgc.m_q
-    orig_zm_l, orig_zm_q = bgc.zoo_m_l, bgc.zoo_m_q
-    bgc.m_l     = orig_m_l  * mort_amp
-    bgc.m_q     = orig_m_q  * mort_amp
-    bgc.zoo_m_l = orig_zm_l * mort_amp
-    bgc.zoo_m_q = orig_zm_q * mort_amp
-    ddt, _ = microbial_sms_omz(interior_tracers, bgc)
-    bgc.m_l,     bgc.m_q     = orig_m_l,  orig_m_q
-    bgc.zoo_m_l, bgc.zoo_m_q = orig_zm_l, orig_zm_q
+        bgc = state['bgc']
+        orig_m_l,  orig_m_q  = bgc.m_l,     bgc.m_q
+        orig_zm_l, orig_zm_q = bgc.zoo_m_l, bgc.zoo_m_q
+        bgc.m_l     = orig_m_l  * state['mort_amp']
+        bgc.m_q     = orig_m_q  * state['mort_amp']
+        bgc.zoo_m_l = orig_zm_l * state['mort_amp']
+        bgc.zoo_m_q = orig_zm_q * state['mort_amp']
+        ddt, _ = microbial_sms_omz(interior_tracers, bgc)
+        bgc.m_l,     bgc.m_q     = orig_m_l,  orig_m_q
+        bgc.zoo_m_l, bgc.zoo_m_q = orig_zm_l, orig_zm_q
 
     # ── 5. Chem tracer RHS  (advection + diffusion + bio) ────────────────────
-    # 2nd-order upwind
     t_full = torch.stack([tracers_dict[n] for n in chem_names])
     t_pad  = torch.nn.functional.pad(t_full, (1, 1, 1, 1), mode='replicate')
     t_c2   = t_pad[..., 2:-2, 2:-2]
@@ -400,22 +434,24 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg):
                         v_vel * (3.0 * t_c2 - 4.0 * t_s2 + t_ss) * state['inv_2dy'],
                         v_vel * (-t_nn + 4.0 * t_n2 - 3.0 * t_c2) * state['inv_2dy'])
     tracer_advection = -(adv_x + adv_y)
-
-    for i, name in enumerate(chem_names):
-        rhs_t = tracer_advection[i] + state['K'] * lap[i + 1] + ddt[name] * bio_accel
-        if name == 'doc':
-            # POC → DOC hydrolysis source (biomass-driven, saturating in POC).
-            rhs_t = rhs_t + doc_flux
+    
+    for i, name in enumerate(state['chem_names']):
+        rhs_t = tracer_advection[i] + state['K'] * lap[i + 1]
+        if compute_bio:
+            rhs_t = rhs_t + (ddt[name] * state['bio_accel'])
+            if name == 'doc':
+                rhs_t = rhs_t + doc_flux
         state['_rhs_tracers'][name][..., 1:-1, 1:-1] = rhs_t
 
-    # ── 6. Bio tracer RHS  (SMS only — no advection, no diffusion) ───────────
-    for name in bio_names:
-        state['_rhs_tracers'][name][..., 1:-1, 1:-1] = ddt[name] * bio_accel
-
-    # ── 7. POC RHS  (solid substrate — no advection, no diffusion) ───────────
-    # Hydrolysis sink only; NOT multiplied by bio_accel again here since
-    # k_hyd_max is already pre-scaled by bio_accel in setup_physics.
-    state['_rhs_tracers']['poc'][..., 1:-1, 1:-1] = -doc_flux
+    # ── 6 & 7. Bio & POC tracer RHS ──────────────────────────────────────────
+    if compute_bio:
+        for name in state['bio_names']:
+            state['_rhs_tracers'][name][..., 1:-1, 1:-1] = ddt[name] * state['bio_accel']
+        state['_rhs_tracers']['poc'][..., 1:-1, 1:-1] = -doc_flux
+    else:
+        for name in state['bio_names']:
+            state['_rhs_tracers'][name][..., 1:-1, 1:-1] = 0.0
+        state['_rhs_tracers']['poc'][..., 1:-1, 1:-1] = 0.0
 
     return state['_rhs_buf_w'], state['_rhs_tracers']
 

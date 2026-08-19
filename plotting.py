@@ -6,6 +6,8 @@ from matplotlib.patches import Circle
 from matplotlib.colors import Normalize
 from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import os
+import biopar
 
 BIO_NAMES   = ['aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo']
 BIO_LABELS  = ['Aer', 'NaR', 'NaI', 'NaO', 'NiR', 'NiO', 'NoS', 'AOA', 'NOB', 'AOX', 'Zoo']
@@ -29,6 +31,30 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
                    w_snapshots, u_snapshots, v_snapshots,
                    snapshot_times, n2o_ammox_snapshots, n2o_denit_snapshots,
                    bio_snapshots, growth_rate_snapshots, cfg):
+    
+
+    t_tot = getattr(cfg, 'Total_Time', 'NA')
+    t_mac = getattr(cfg, 'macro_cycle_time', 'NA')
+    m_amp = getattr(biopar, 'loss_multiplier', 'NA')
+    bio_skip = getattr(cfg, 'bio_skipping', getattr(cfg, 'bio_stepping', 'NA'))
+    
+    import biopar
+    import re
+
+    try:
+        with open("loop.py", "r") as f:
+            match = re.search(r'\.min\(\)\.item\(\)\s*\*\s*([\d\.]+)', f.read())
+            safe_dt_lim = float(match.group(1)) if match else "Unknown"
+    except FileNotFoundError:
+        safe_dt_lim = "Unknown"
+
+    loss_mult = biopar.loss_multiplier
+    int_flush = getattr(cfg, 'intermittent_physics_flush_time', 750.0)
+
+    # Generate the strictly accurate directory name
+    out_dir = f"Plots_T{t_tot/86400:.1f}days_Mac{t_mac}sec_R{cfg.radius}mm_MortAmp{loss_mult}_BioOnlyTime_{bio_skip}s_Lim{safe_dt_lim}_IntFlush{int_flush}s"
+    os.makedirs(out_dir, exist_ok=True)
+    os.chdir(out_dir)
 
     x = np.linspace(0, cfg.Lx, cfg.Nx)
     y = np.linspace(0, cfg.Ly, cfg.Ny)
@@ -142,6 +168,8 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     anim.save(filename_2d, writer='ffmpeg', fps=60, progress_callback=lambda i, n: pbar.update(1))
     pbar.close()
     print(f"Saved {filename_2d}!")
+    
+
 
     # ═════════════════════════════════════════════════════════════════════════
     # ── 1D CROSS-SECTION ANIMATION ────────────────────────────────────────────
@@ -222,7 +250,61 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     anim_1d.save(filename_1d, writer='ffmpeg', fps=60, progress_callback=lambda i, n: pbar_1d.update(1))
     pbar_1d.close()
     print(f"Saved {filename_1d}!")
-# ═════════════════════════════════════════════════════════════════════════
+
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # ── 1D CROSS-SECTION ANIMATION FOR FUNCTIONAL TYPES ──────────────────────
+    # ═════════════════════════════════════════════════════════════════════════
+    fig_1d_bio, axes_1d_bio = plt.subplots(4, 3, figsize=(15, 12), sharex=True)
+    axes_1d_bio_flat = axes_1d_bio.flatten()
+    axes_1d_bio_flat[-1].set_visible(False)  # 11 bugs, 12th slot hidden
+
+    lines_1d_bio = []
+    
+    for bi, (bname, blabel, bcolor) in enumerate(zip(BIO_NAMES, BIO_LABELS, BIO_COLORS)):
+        ax = axes_1d_bio_flat[bi]
+        
+        # Calculate max along midline across all frames for scaling
+        max_val = float(np.max([np.max(bio_snapshots[bname][fi][:, idx_y]) for fi in range(len(snapshot_times))]))
+        y_max = max(1e-4, max_val * 1.05)
+        
+        line, = ax.plot(x, bio_snapshots[bname][0][:, idx_y], color=bcolor, lw=2)
+        lines_1d_bio.append(line)
+        
+        ax.axvline(cfg.cx - cfg.radius, color='k', linestyle='--', alpha=0.5)
+        ax.axvline(cfg.cx + cfg.radius, color='k', linestyle='--', alpha=0.5)
+        ax.set_title(blabel, fontweight='bold')
+        ax.set_xlim(0, cfg.Lx)
+        ax.set_ylim(0, y_max)
+        ax.set_ylabel("Density (mmol C m⁻³)")
+        ax.grid(True, linestyle='--', alpha=0.6)
+        
+        if bi >= 8: 
+            ax.set_xlabel("X coordinate")
+
+    title_1d_bio = fig_1d_bio.suptitle("Horizontal Cross-Section: Functional Types — Time: 0.00", fontsize=16, fontweight='bold', y=0.98)
+    fig_1d_bio.text(0.5, 0.94, param_str, ha='center', va='top', fontsize=10,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray'))
+    plt.tight_layout(rect=[0, 0.03, 1, 0.90])
+
+    def update_1d_bio(frame_idx):
+        for bi, bname in enumerate(BIO_NAMES):
+            lines_1d_bio[bi].set_ydata(bio_snapshots[bname][frame_idx][:, idx_y])
+        title_1d_bio.set_text(f"Horizontal Cross-Section: Functional Types — Time: {snapshot_times[frame_idx]:.2f}")
+        return lines_1d_bio
+
+    anim_1d_bio = animation.FuncAnimation(fig_1d_bio, update_1d_bio, frames=len(snapshot_times), interval=15, blit=False)
+    filename_1d_bio = f"1D_Bio_{base_filename}.mp4"
+    print(f"\nSaving 1D Bio Animation to {filename_1d_bio}...")
+    pbar_1d_bio = tqdm(total=len(snapshot_times), desc="Rendering 1D Bio", ascii="⡀⡄⡆⡇▞▚░▒▓", unit="frames",
+                   bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    anim_1d_bio.save(filename_1d_bio, writer='ffmpeg', fps=60, progress_callback=lambda i, n: pbar_1d_bio.update(1))
+    pbar_1d_bio.close()
+    print(f"Saved {filename_1d_bio}!")
+
+
+
+    # ═════════════════════════════════════════════════════════════════════════
     # ── POPULATION DENSITY ANIMATION ─────────────────────────────────────────
     #
     # Layout: 4 columns
@@ -514,103 +596,106 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     pbar_pop.close()
     print(f"Saved {filename_pop}!")
 
+    # # ═════════════════════════════════════════════════════════════════════════
+    # # ── 2D SPATIAL MICROBIAL DENSITY ANIMATION ────────────────────────────────
+    # #
+    # # One imshow panel per functional group (11 groups + zoo = 11 panels total),
+    # # arranged in a 3×4 grid (last cell empty).  Each panel shows the 2D spatial
+    # # biomass field [mmol C m⁻³] at the current snapshot, colour-coded with
+    # # each group's own colour fading from black.  Axes zoomed around the particle.
+    # # The particle boundary circle is overlaid in white on each panel.
+    # #
+    # # This lets you see WHERE on and around the particle each functional group
+    # # concentrates — the spatial succession picture that complements the
+    # # time-series panels in PopDensity.
+    # # ═════════════════════════════════════════════════════════════════════════
+
+    # # Pre-compute global vmax for each bug across all frames (99th pct for robustness)
+    # bio_vmaxes = []
+    # for bname in BIO_NAMES:
+    #     all_vals = np.concatenate([f.ravel() for f in bio_snapshots[bname]])
+    #     vmax_b   = float(np.percentile(all_vals, 99)) if all_vals.max() > 0 else 1.0
+    #     bio_vmaxes.append(max(vmax_b, 1e-10))
+
+    # # Build per-bug colormaps: black → group colour
+    # from matplotlib.colors import LinearSegmentedColormap
+    # bug_cmaps = []
+    # for col in BIO_COLORS:
+    #     cmap_b = LinearSegmentedColormap.from_list(col, ['#000000', col], N=256)
+    #     bug_cmaps.append(cmap_b)
+
+    # n_cols_bio = 4
+    # n_rows_bio = 3   # 3×4 = 12 slots for 11 groups
+    # fig_bio, axes_bio = plt.subplots(n_rows_bio, n_cols_bio,
+    #                                  figsize=(n_cols_bio * 4.5, n_rows_bio * 3.2))
+    # axes_bio_flat = axes_bio.flatten()
+
+    # # Hide the 12th (unused) panel
+    # axes_bio_flat[-1].set_visible(False)
+
+    # fig_bio.patch.set_facecolor('#0d0d1a')
+
+    # im_bios = []
+    # for bi, (bname, blabel, bcmap) in enumerate(zip(BIO_NAMES, BIO_LABELS, bug_cmaps)):
+    #     ax_b = axes_bio_flat[bi]
+    #     ax_b.set_facecolor('#0d0d1a')
+
+    #     data0 = bio_snapshots[bname][0]
+    #     im_b  = ax_b.imshow(data0.T, origin='lower',
+    #                          extent=[0, cfg.Lx, 0, cfg.Ly],
+    #                          cmap=bcmap, vmin=0, vmax=bio_vmaxes[bi],
+    #                          interpolation='bilinear')
+    #     im_bios.append(im_b)
+
+    #     ax_b.add_patch(Circle((cfg.cx, cfg.cy), cfg.radius,
+    #                            color='white', fill=False, linewidth=1.5))
+    #     ax_b.set_xlim(0, cfg.Lx)
+    #     ax_b.set_ylim(zoom_y_min, zoom_y_max)
+    #     ax_b.set_title(blabel, color='white', fontsize=11, fontweight='bold', pad=4)
+    #     ax_b.tick_params(colors='#555577', labelsize=7)
+    #     for spine in ax_b.spines.values():
+    #         spine.set_edgecolor('#222244')
+
+    #     divider_b = make_axes_locatable(ax_b)
+    #     cax_b     = divider_b.append_axes("right", size="5%", pad=0.05)
+    #     cb_b      = plt.colorbar(im_b, cax=cax_b)
+    #     cb_b.ax.tick_params(colors='#aaaacc', labelsize=7)
+    #     cb_b.set_label("mmol C m⁻³", color='#aaaacc', fontsize=7)
+
+    # title_bio = fig_bio.suptitle("Microbial Spatial Density — Time: 0.00 s",
+    #                               color='white', fontsize=14, fontweight='bold', y=1.01)
+    # fig_bio.text(0.5, -0.01, param_str, ha='center', va='top', fontsize=8,
+    #              color='#aaaacc',
+    #              bbox=dict(boxstyle='round', facecolor='#0d0d1a',
+    #                        alpha=0.8, edgecolor='#333355'))
+    # plt.tight_layout(rect=[0, 0.02, 1, 0.99])
+
+    # def update_bio(frame_idx):
+    #     for bi, bname in enumerate(BIO_NAMES):
+    #         im_bios[bi].set_data(bio_snapshots[bname][frame_idx].T)
+    #     title_bio.set_text(
+    #         f"Microbial Spatial Density — Time: {snapshot_times[frame_idx]:.2f} s")
+    #     return im_bios
+
+    # anim_bio = animation.FuncAnimation(
+    #     fig_bio, update_bio, frames=n_frames, interval=15, blit=False)
+
+    # filename_bio = f"BioSpatial_{base_filename}.mp4"
+    # print(f"\nSaving 2D Microbial Density Animation to {filename_bio}...")
+    # pbar_bio = tqdm(total=n_frames, desc="Rendering BioSpatial",
+    #                 ascii="⡀⡄⡆⡇▞▚░▒▓", unit="frames",
+    #                 bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    # anim_bio.save(filename_bio, writer='ffmpeg', fps=60,
+    #               progress_callback=lambda i, n: pbar_bio.update(1))
+    # pbar_bio.close()
+    # print(f"Saved {filename_bio}!")
+
+    # # plt.show()
+
     # ═════════════════════════════════════════════════════════════════════════
-    # ── 2D SPATIAL MICROBIAL DENSITY ANIMATION ────────────────────────────────
-    #
-    # One imshow panel per functional group (11 groups + zoo = 11 panels total),
-    # arranged in a 3×4 grid (last cell empty).  Each panel shows the 2D spatial
-    # biomass field [mmol C m⁻³] at the current snapshot, colour-coded with
-    # each group's own colour fading from black.  Axes zoomed around the particle.
-    # The particle boundary circle is overlaid in white on each panel.
-    #
-    # This lets you see WHERE on and around the particle each functional group
-    # concentrates — the spatial succession picture that complements the
-    # time-series panels in PopDensity.
+    # ── EXACT SPECIFIC GROWTH RATES ──────────────────────────────────────────
     # ═════════════════════════════════════════════════════════════════════════
 
-    # Pre-compute global vmax for each bug across all frames (99th pct for robustness)
-    bio_vmaxes = []
-    for bname in BIO_NAMES:
-        all_vals = np.concatenate([f.ravel() for f in bio_snapshots[bname]])
-        vmax_b   = float(np.percentile(all_vals, 99)) if all_vals.max() > 0 else 1.0
-        bio_vmaxes.append(max(vmax_b, 1e-10))
-
-    # Build per-bug colormaps: black → group colour
-    from matplotlib.colors import LinearSegmentedColormap
-    bug_cmaps = []
-    for col in BIO_COLORS:
-        cmap_b = LinearSegmentedColormap.from_list(col, ['#000000', col], N=256)
-        bug_cmaps.append(cmap_b)
-
-    n_cols_bio = 4
-    n_rows_bio = 3   # 3×4 = 12 slots for 11 groups
-    fig_bio, axes_bio = plt.subplots(n_rows_bio, n_cols_bio,
-                                     figsize=(n_cols_bio * 4.5, n_rows_bio * 3.2))
-    axes_bio_flat = axes_bio.flatten()
-
-    # Hide the 12th (unused) panel
-    axes_bio_flat[-1].set_visible(False)
-
-    fig_bio.patch.set_facecolor('#0d0d1a')
-
-    im_bios = []
-    for bi, (bname, blabel, bcmap) in enumerate(zip(BIO_NAMES, BIO_LABELS, bug_cmaps)):
-        ax_b = axes_bio_flat[bi]
-        ax_b.set_facecolor('#0d0d1a')
-
-        data0 = bio_snapshots[bname][0]
-        im_b  = ax_b.imshow(data0.T, origin='lower',
-                             extent=[0, cfg.Lx, 0, cfg.Ly],
-                             cmap=bcmap, vmin=0, vmax=bio_vmaxes[bi],
-                             interpolation='bilinear')
-        im_bios.append(im_b)
-
-        ax_b.add_patch(Circle((cfg.cx, cfg.cy), cfg.radius,
-                               color='white', fill=False, linewidth=1.5))
-        ax_b.set_xlim(0, cfg.Lx)
-        ax_b.set_ylim(zoom_y_min, zoom_y_max)
-        ax_b.set_title(blabel, color='white', fontsize=11, fontweight='bold', pad=4)
-        ax_b.tick_params(colors='#555577', labelsize=7)
-        for spine in ax_b.spines.values():
-            spine.set_edgecolor('#222244')
-
-        divider_b = make_axes_locatable(ax_b)
-        cax_b     = divider_b.append_axes("right", size="5%", pad=0.05)
-        cb_b      = plt.colorbar(im_b, cax=cax_b)
-        cb_b.ax.tick_params(colors='#aaaacc', labelsize=7)
-        cb_b.set_label("mmol C m⁻³", color='#aaaacc', fontsize=7)
-
-    title_bio = fig_bio.suptitle("Microbial Spatial Density — Time: 0.00 s",
-                                  color='white', fontsize=14, fontweight='bold', y=1.01)
-    fig_bio.text(0.5, -0.01, param_str, ha='center', va='top', fontsize=8,
-                 color='#aaaacc',
-                 bbox=dict(boxstyle='round', facecolor='#0d0d1a',
-                           alpha=0.8, edgecolor='#333355'))
-    plt.tight_layout(rect=[0, 0.02, 1, 0.99])
-
-    def update_bio(frame_idx):
-        for bi, bname in enumerate(BIO_NAMES):
-            im_bios[bi].set_data(bio_snapshots[bname][frame_idx].T)
-        title_bio.set_text(
-            f"Microbial Spatial Density — Time: {snapshot_times[frame_idx]:.2f} s")
-        return im_bios
-
-    anim_bio = animation.FuncAnimation(
-        fig_bio, update_bio, frames=n_frames, interval=15, blit=False)
-
-    filename_bio = f"BioSpatial_{base_filename}.mp4"
-    print(f"\nSaving 2D Microbial Density Animation to {filename_bio}...")
-    pbar_bio = tqdm(total=n_frames, desc="Rendering BioSpatial",
-                    ascii="⡀⡄⡆⡇▞▚░▒▓", unit="frames",
-                    bar_format='{desc}: {percentage:3.0f}%|{bar:50}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
-    anim_bio.save(filename_bio, writer='ffmpeg', fps=60,
-                  progress_callback=lambda i, n: pbar_bio.update(1))
-    pbar_bio.close()
-    print(f"Saved {filename_bio}!")
-
-    # plt.show()
-
-    # ── EXACT SPECIFIC GROWTH RATES (STATIC PLOT) ────────────────────────────
     mean_mu = np.zeros((n_frames, n_bugs), dtype=np.float32)
     
     # growth_rate_snapshots is saved from the interior array (Nx-2, Ny-2)
@@ -652,19 +737,39 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     print(f"Saved {filename_gr}!")
 
 
-     # ── TRACER TIME SERIES AT MULTIPLE POINTS (STEADY-STATE CHECK) ───────────
-    # Three sample points along the centerline, same y (cfg.cy):
-    #   - Core:     particle center — should be the fastest to settle
-    #   - Upstream: halfway between the left domain edge and the particle —
-    #               ambient-facing, less perturbed
-    #   - Downstream: halfway between the particle and the right domain edge —
-    #               sits in the wake, likely the LAST point to settle since
-    #               it's fed by whatever's still developing upstream of it
-    iy_c = int(round(cfg.cy / cfg.dy))
+    # ── EXACT BIOMASS OVER TIME (STATIC PLOT) ────────────────────────────
+    fig_bio_ts, ax_bio_ts = plt.subplots(figsize=(10, 6))
+    fig_bio_ts.patch.set_facecolor('#1a1a2e')
+    ax_bio_ts.set_facecolor('#16213e')
 
+    for bi, bname in enumerate(BIO_NAMES):
+        ax_bio_ts.plot(snapshot_times, mean_core[:, bi], color=BIO_COLORS[bi], lw=2, label=BIO_LABELS[bi])
+
+    ax_bio_ts.set_title("Mean Core Biomass Over Time", color='white', fontweight='bold')
+    ax_bio_ts.set_xlabel("Time (s)", color='white')
+    ax_bio_ts.set_ylabel("Biomass (mmol C m⁻³)", color='white')
+    ax_bio_ts.tick_params(colors='white')
+    for spine in ax_bio_ts.spines.values(): spine.set_edgecolor('#444466')
+    ax_bio_ts.legend(loc='upper right', fontsize=8, facecolor='#1a1a2e', edgecolor='#444466', labelcolor='white', ncol=2)
+
+    filename_bio_ts = f"BiomassTimeSeries_{base_filename}.png"
+    plt.tight_layout()
+    plt.savefig(filename_bio_ts, dpi=300)
+    plt.close(fig_bio_ts)
+    print(f"Saved {filename_bio_ts}!")
+
+
+    # ── TRACER TIME SERIES AT MULTIPLE POINTS (STEADY-STATE CHECK) ───────────
+    # Three sample points along the centerline, same y (cfg.cy):
+    #   - Core:       particle center
+    #   - Upstream:   halfway between the core and the particle's LEFT edge
+    #                 (still inside the particle, ambient-facing side)
+    #   - Downstream: halfway between the core and the particle's RIGHT edge
+    #                 (still inside the particle, wake-facing side)
+    iy_c = int(round(cfg.cy / cfg.dy))
     ix_core       = int(round(cfg.cx / cfg.dx))
-    ix_upstream   = int(round((cfg.cx / 2.0) / cfg.dx))
-    ix_downstream = int(round((cfg.cx + (cfg.Lx - cfg.cx) / 2.0) / cfg.dx))
+    ix_upstream   = int(round((cfg.cx - cfg.radius / 2.0) / cfg.dx))
+    ix_downstream = int(round((cfg.cx + cfg.radius / 2.0) / cfg.dx))
 
     sample_points = {
         'Core (particle center)': ix_core,
@@ -700,39 +805,65 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
         ax_s.grid(alpha=0.3)
 
     axes_ss_flat[0].legend(loc='best', fontsize=8)
-
-    for ax_s in axes_ss_flat[-3:-1]:
-        ax_s.set_xlabel('Time (s)')
+    for ax_s in axes_ss_flat[-3:-1]: ax_s.set_xlabel('Time (s)')
 
     fig_ss.suptitle(
         f"Tracer Concentrations at 3 Points — Steady-State Check\n"
-        f"(y = {cfg.cy:.2f}; core x={cfg.cx:.2f}, upstream x={cfg.cx/2.0:.2f}, "
-        f"downstream x={cfg.cx + (cfg.Lx - cfg.cx)/2.0:.2f})",
+        f"(y = {cfg.cy:.2f}; core x={cfg.cx:.2f}, "
+        f"upstream x={cfg.cx - cfg.radius/2.0:.2f}, "
+        f"downstream x={cfg.cx + cfg.radius/2.0:.2f})",
         fontweight='bold', fontsize=13)
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-
     filename_ss = f"SteadyStateCheck_{base_filename}.png"
     plt.savefig(filename_ss, dpi=300)
     plt.close(fig_ss)
     print(f"Saved {filename_ss}!")
 
-    # ── EXACT BIOMASS OVER TIME (STATIC PLOT) ────────────────────────────
-    fig_bio_ts, ax_bio_ts = plt.subplots(figsize=(10, 6))
-    fig_bio_ts.patch.set_facecolor('#1a1a2e')
-    ax_bio_ts.set_facecolor('#16213e')
+    # ── FUNCTIONAL TYPE TIME SERIES AT 3 POINTS (STEADY-STATE CHECK FOR BUGS) ──
+    # Mirroring the layout above for bugs
+    n_rows_b_ss = 4
+    n_cols_b_ss = 3   # 4x3 = 12 slots for 11 bugs
+    fig_ss_bugs, axes_ss_bugs = plt.subplots(n_rows_b_ss, n_cols_b_ss,
+                                               figsize=(n_cols_b_ss * 4.67, n_rows_b_ss * 3.5),
+                                               sharex=True)
+    axes_ss_bugs_flat = axes_ss_bugs.flatten()
+    axes_ss_bugs_flat[-1].set_visible(False)  # 11 bugs, 12th slot unused
 
-    for bi, bname in enumerate(BIO_NAMES):
-        ax_bio_ts.plot(snapshot_times, mean_core[:, bi], color=BIO_COLORS[bi], lw=2, label=BIO_LABELS[bi])
+    # Dictionary mapping each bug name to its time-series of 2D memmap snapshots
+    bio_ts_snapshots = {
+        bname: bio_snapshots[bname]
+        for bname in BIO_NAMES
+    }
 
-    ax_bio_ts.set_title("Mean Core Biomass Over Time", color='white', fontweight='bold')
-    ax_bio_ts.set_xlabel("Time (s)", color='white')
-    ax_bio_ts.set_ylabel("Biomass (mmol C m⁻³)", color='white')
-    ax_bio_ts.tick_params(colors='white')
-    for spine in ax_bio_ts.spines.values(): spine.set_edgecolor('#444466')
-    ax_bio_ts.legend(loc='upper right', fontsize=8, facecolor='#1a1a2e', edgecolor='#444466', labelcolor='white', ncol=2)
+    for ax_s, (bname, blabel) in zip(axes_ss_bugs_flat[:11], zip(BIO_NAMES, BIO_LABELS)):
+        bug_snaps = bio_ts_snapshots[bname]
+        for label, ix in sample_points.items():
+            # series shape is (n_frames,)
+            series = [bug_snaps[fi][ix, iy_c] for fi in range(n_frames)]
+            ax_s.plot(snapshot_times, series, lw=2, color=sample_colors[label], label=label)
+        ax_s.set_title(blabel, fontweight='bold')
+        ax_s.set_ylabel('Density (mmol C m⁻³)')
+        ax_s.grid(alpha=0.3)
 
-    filename_bio_ts = f"BiomassTimeSeries_{base_filename}.png"
-    plt.tight_layout()
-    plt.savefig(filename_bio_ts, dpi=300)
-    plt.close(fig_bio_ts)
-    print(f"Saved {filename_bio_ts}!")
+    # First plot legend clarification
+    axes_ss_bugs_flat[0].legend(loc='best', fontsize=8)
+
+    # shared xlabel on last two plots only (12 slots, flat, hidden is -1, last row except -1 is -3,-2)
+    # Correcting indices for a 4x3 grid with last hidden. Row 3 indices are 9,10,11. Valid are 9,10.
+    # Flat indices are correct.
+    for ax_s in axes_ss_bugs_flat[9:11]: ax_s.set_xlabel('Time (s)')
+
+    fig_ss_bugs.suptitle(
+        f"Steady-State Check for each Functional Type\n"
+        f"(y = {cfg.cy:.2f}; core x={cfg.cx:.2f}, "
+        f"upstream x={cfg.cx - cfg.radius/2.0:.2f}, "
+        f"downstream x={cfg.cx + cfg.radius/2.0:.2f})",
+        fontweight='bold', fontsize=13)
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    filename_ss_bugs = f"SteadyStateCheck_Bugs_{base_filename}.png"
+    plt.savefig(filename_ss_bugs, dpi=300)
+    plt.close(fig_ss_bugs)
+    print(f"Saved {filename_ss_bugs}!")
+
+
+    os.chdir(orig_dir)

@@ -9,7 +9,7 @@ class BioPar:
     Includes dynamic stoichiometry from get_stoichiometry.m
     """
     rate_amplifier: float = 1  # Dimensionless multiplier on all rates 
-    loss_multiplier = 0.0001
+    loss_multiplier = 0.1
 
 
     # ── Organic Matter Composition (Anderson & Sarmiento 1994) ──

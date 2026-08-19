@@ -1,0 +1,25 @@
+Case,Relative_L2_Error
+Synchronous (Baseline),0.0
+Bio-Skip (5s),0.11033344
+Bio-Skip + Flush,0.016476039
+Bio-Skip + 250s Flush,0.020834474
+Bio-Skip + 750s Flush,0.015837908
+Bio-Skip + 1000s Flush,0.015556021
+Bio-Skip (15s) NO Flush,0.19777967
+Bio-Skip (15s) + 500s Flush,0.01877263
+Bio-Skip (15s) + 1000s Flush,0.019344281
+Bio-Skip (20s) + 500s Flush,0.014766546
+Bio-Skip (25s) + 500s Flush,0.011014362
+Bio-Skip (30s) + 500s Flush,0.007865394
+Bio-Skip (40s) + 500s Flush,0.0029849634
+Bio-Skip (50s) + 500s Flush,0.0009278394
+Bio-Skip (60s) + 500s Flush,0.0032851747
+Bio-Skip (75s) + 500s Flush,0.006039314
+Bio-Skip (90s) + 500s Flush,0.007996578
+Bio-Skip (120s) + 500s Flush,0.010574732
+Bio-Skip (150s) + 500s Flush,0.012195977
+Bio-Skip (180s) + 500s Flush,0.013301583
+Bio-Skip (240s) + 500s Flush,0.014695934
+Bio-Skip (300s) + 500s Flush,0.01549645
+Bio-Skip (400s) + 500s Flush,0.016389739
+Bio-Skip (500s) + 500s Flush,0.016963053

@@ -1,0 +1,13 @@
+Depletion_Limit,Relative_L2_Error
+"Baseline
+(Fully Coupled)",0.0
+Limit: 0.1,0.04927889
+Limit: 0.3,0.038530078
+Limit: 0.4,0.03718889
+Limit: 0.5,0.03447854
+Limit: 0.6,0.034900896
+Limit: 0.7,0.032544926
+Limit: 0.8,0.04680043
+Limit: 0.9,0.045833625
+Limit: 0.95,0.025657583
+Limit: 0.99,0.044169273

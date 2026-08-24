@@ -62,7 +62,7 @@ def setup_physics(cfg):
 
     # ── Drag mask & particle mask ─────────────────────────────────────────────
     t_adv_cell = np.minimum(dx_b, dy_b) / U_bg_b
-    max_alpha   = 30.0 / t_adv_cell
+    max_alpha   = 60.0 / t_adv_cell
     
     cfg.drag_max = max_alpha
 
@@ -434,9 +434,21 @@ def get_rhs_batched(w_f, tracers_dict, streamfunction, state, cfg, compute_bio=T
                         v_vel * (3.0 * t_c2 - 4.0 * t_s2 + t_ss) * state['inv_2dy'],
                         v_vel * (-t_nn + 4.0 * t_n2 - 3.0 * t_c2) * state['inv_2dy'])
     tracer_advection = -(adv_x + adv_y)
-    
+
+    # Solid particle: no bulk fluid flow through it, so advection can
+    # optionally be zeroed inside the disk (particle_mask == 1).
+    # Controlled by cfg.advect_tracers_in_particle:
+    #   True  (default) -> advection acts everywhere, including inside the
+    #                      particle (original behavior, no masking)
+    #   False            -> advection is zeroed inside the disk; diffusion
+    #                      (state['K']*lap below) is left untouched either way
+    if getattr(cfg, 'advect_tracers_in_particle', True):
+        no_advect_interior = 1.0
+    else:
+        no_advect_interior = 1.0 - state['particle_mask'][..., 1:-1, 1:-1]
+
     for i, name in enumerate(state['chem_names']):
-        rhs_t = tracer_advection[i] + state['K'] * lap[i + 1]
+        rhs_t = tracer_advection[i] * no_advect_interior + state['K'] * lap[i + 1]
         if compute_bio:
             rhs_t = rhs_t + (ddt[name] * state['bio_accel'])
             if name == 'doc':

@@ -1,16 +1,19 @@
 # config.py
 use_symmetry = True   # Artificial symmetry enforcement to keep the model stable.
 batch_size   = 1      # Default for main.py (overridden by run_suite.py)
-snapshot_time = 1800.0   # Seconds between saved snapshots
+# snapshot_time = 1800.0   # Seconds between saved snapshots
+snapshot_time = 250.0   # Seconds between saved snapshots
+advect_tracers_in_particle = False   # False = mask advection inside the particle interior
+
 
 # ── Suite / loop control flags ────────────────────────────────────────────────
 is_suite                 = False
 terminal_snapshot_only   = False
 extrapolate_steady_state = False
-bio_skipping             = True   # True = Asynchronous bio-skipping; False = Fully-coupled synchronous mode after flow freezes
+bio_skipping             = False   # True = Asynchronous bio-skipping; False = Fully-coupled synchronous mode after flow freezes
 # macro_cycle_time = 1905.0
-macro_cycle_time = 5000
-intermittent_physics_flush_time = 750.0
+macro_cycle_time = 500
+intermittent_physics_flush_time = 260.0
 
 
 extended_physics_flush_at_end = True
@@ -37,7 +40,7 @@ BIO_ACCEL = 1
 # Lx = 20.0 * radius
 Lx = 9 * radius
 Ly = 9 * radius
-# Nx, Ny = int(351), int(307)
+# Nx, Ny = int(307), int(307)
 # Nx, Ny = int(151), int(151)  # Reduced grid for faster testing
 # Nx, Ny = int(161), int(161)  
 Nx, Ny = int(101), int(101)  
@@ -50,7 +53,7 @@ cx = 3.0 * radius
 cy = Ly / 2.0
 
 # ── Target Dimensionless Numbers ──────────────────────────────────────────────
-Sc_target = 660
+Sc_target = 1000
 
 # ── Derived Physics Parameters ────────────────────────────────────────────────
 nu   = 1.04                               # Kinematic viscosity of seawater (mm² s⁻¹)
@@ -66,8 +69,8 @@ Sh        = 1 + 0.619 * Re_actual ** 0.412 * Sc_target ** (1.0 / 3.0)
 
 # Total_Time = 30000.0
 # Total_Time = 86400*14
-Total_Time = 9 * 86400
-# Total_Time = 1800
+# Total_Time = 4 * 86400
+Total_Time = 5000
 # Total_Time = 25000.0
 
 
@@ -79,6 +82,6 @@ print(f"Time     | Total_Time: {Total_Time:.2f} s")
 print(f"────────────────────────\n")
 
 # ── Time Stepping ─────────────────────────────────────────────────────────────
-# target_CFL = 0.2
-target_CFL = 0.4
+target_CFL = 0.15
+# target_CFL = 0.4
 # target_CFL = 0.5

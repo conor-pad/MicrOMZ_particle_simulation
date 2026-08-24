@@ -8,7 +8,7 @@ class BioPar:
     Biogeochemical parameters based on nit_biopar_omz.m
     Includes dynamic stoichiometry from get_stoichiometry.m
     """
-    rate_amplifier: float = 1  # Dimensionless multiplier on all rates 
+    rate_amplifier: float = 1000  # Dimensionless multiplier on all rates 
     loss_multiplier = 0.0001
 
 

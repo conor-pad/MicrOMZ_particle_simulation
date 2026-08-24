@@ -66,7 +66,7 @@ def run_simulation(state, cfg, device):
 
     # ── Flow-freeze config ────────────────────────────────────────────────────
     FLOW_FREEZE_ENABLED     = getattr(cfg, 'flow_freeze_enabled', True)
-    FLOW_FREEZE_TOL         = getattr(cfg, 'flow_freeze_tol', 4e-6)
+    FLOW_FREEZE_TOL         = getattr(cfg, 'flow_freeze_tol', 3e-5)
     FLOW_FREEZE_CHECK_EVERY = max(1, int(getattr(cfg, 'flow_freeze_check_every', 200)))
     FLOW_FREEZE_MIN_CONSEC  = max(1, int(getattr(cfg, 'flow_freeze_min_consecutive', 2)))
     FLOW_FREEZE_CKPT_PATH   = getattr(cfg, 'flow_freeze_ckpt_path', 'flow_freeze_checkpoint.pt')
@@ -183,7 +183,7 @@ def run_simulation(state, cfg, device):
         n += 1
 
         # Periodic GPU Cache Flush
-        if n % 1000 == 0 and torch.backends.mps.is_available():
+        if n % 100 == 0 and torch.backends.mps.is_available():
             torch.mps.empty_cache()
 
         if FLOW_FREEZE_ENABLED and not flow_frozen and n > 0 and n % FLOW_FREEZE_CHECK_EVERY == 0:
@@ -295,8 +295,9 @@ def run_simulation(state, cfg, device):
 
                 # Keep RAM flat during flush
                 if f_step % 1000 == 0 and torch.backends.mps.is_available():
+                    
                     torch.mps.empty_cache()
-
+                    print(f"  [Sync Loop] step {f_step} | t = {current_time:.2f}s / {cfg.Total_Time}s | Remaining: {cfg.Total_Time - current_time:.2f}s")
                 # Snapshots actually save during the washout now
                 if (current_time - last_snapshot_time) >= snapshot_interval_seconds:
                     save_snapshots(current_time)
@@ -347,8 +348,10 @@ def run_simulation(state, cfg, device):
             f_step += 1
 
             # Cache clearing
-            if f_step % 1000 == 0 and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
+            if f_step % 1000 == 0:
+                if torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                print(f"  [Sync Loop] step {f_step} | t = {current_time:.2f}s / {cfg.Total_Time}s | Remaining: {cfg.Total_Time - current_time:.2f}s")
 
             if (current_time - last_snapshot_time) >= snapshot_interval_seconds:
                 save_snapshots(current_time)

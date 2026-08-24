@@ -7,7 +7,11 @@ from matplotlib.colors import Normalize
 from tqdm import tqdm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import os
+import re
 import biopar
+import importlib
+importlib.reload(biopar)
+
 
 BIO_NAMES   = ['aer', 'nar', 'nai', 'nao', 'nir', 'nio', 'nos', 'aoa', 'nob', 'aox', 'zoo']
 BIO_LABELS  = ['Aer', 'NaR', 'NaI', 'NaO', 'NiR', 'NiO', 'NoS', 'AOA', 'NOB', 'AOX', 'Zoo']
@@ -38,8 +42,8 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     m_amp = getattr(biopar, 'loss_multiplier', 'NA')
     bio_skip = getattr(cfg, 'bio_skipping', getattr(cfg, 'bio_stepping', 'NA'))
     
-    import biopar
-    import re
+
+    from biopar import BioPar
 
     try:
         with open("loop.py", "r") as f:
@@ -48,7 +52,7 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     except FileNotFoundError:
         safe_dt_lim = "Unknown"
 
-    loss_mult = biopar.loss_multiplier
+    loss_mult = BioPar.loss_multiplier
     int_flush = getattr(cfg, 'intermittent_physics_flush_time', 750.0)
 
     # Generate the strictly accurate directory name
@@ -866,4 +870,4 @@ def generate_plots(c_snapshots, n2o_snapshots, no3_snapshots, no2_snapshots,
     print(f"Saved {filename_ss_bugs}!")
 
 
-    os.chdir(orig_dir)
+    # os.chdir(out_dir)
